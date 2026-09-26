@@ -54,6 +54,8 @@ function roundToStep(value: number, step: number): number {
 const TRADING_PAIRS = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
   "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
+  "LTCUSDT", "BCHUSDT", "ATOMUSDT", "NEARUSDT", "APTUSDT",
+  "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT", "SEIUSDT",
 ];
 
 const FACTION_IDS = [

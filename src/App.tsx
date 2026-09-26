@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { LayoutDashboard, Monitor, Table, Settings } from 'lucide-react';
+import { LayoutDashboard, Monitor, Table, Settings, Radio } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { runStrategyScan, updateFactionStats } from '@/lib/engine';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
@@ -16,8 +16,10 @@ import BinanceFeedPanel from '@/components/BinanceFeedPanel';
 import CircuitBreakerPanel from '@/components/CircuitBreakerPanel';
 import PaperTradingPanel from '@/components/PaperTradingPanel';
 import BacktestPanel from '@/components/BacktestPanel';
+import LiveTradingDashboard from '@/components/LiveTradingDashboard';
 
 const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
+  { id: 'live', label: 'Live Terminal', icon: Radio },
   { id: 'command', label: 'Command Center', icon: Monitor },
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'table', label: 'Table View', icon: Table },
@@ -25,7 +27,7 @@ const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
 ];
 
 export default function App() {
-  const [tab, setTab] = useState<TabId>('command');
+  const [tab, setTab] = useState<TabId>('live');
   const [factions, setFactions] = useState<Faction[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [sweeps, setSweeps] = useState<Sweep[]>([]);
@@ -96,6 +98,10 @@ export default function App() {
 
       <main className="mx-auto max-w-[1600px] px-6 py-6">
         <div className="space-y-8 animate-fade-in">
+          {tab === 'live' && (
+            <LiveTradingDashboard />
+          )}
+
           {tab === 'command' && (
             <>
               <FactionGrid factions={factions} />
