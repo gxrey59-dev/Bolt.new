@@ -1046,6 +1046,16 @@ Deno.serve(async (req: Request) => {
             });
             continue;
           }
+          // Block MACD-labeled signals — historically negative P&L strategy
+          if (signal.strategy === "macd_crossover") {
+            signals.push({
+              symbol, faction: pickFaction(symbol), strategy: signal.strategy, side: signal.side,
+              reasoning: signal.reasoning + " [skipped: macd_crossover blocked]", price: currentPrice, strength: signal.strength,
+              tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
+            });
+            continue;
+          }
+
           const factionId = pickFaction(symbol);
           const strategyStats = strategyWinRates.get(signal.strategy);
           const skippedByWinRate = strategyStats && strategyStats.totalTrades >= 5 && strategyStats.winRate < config.minWinRateThreshold;
