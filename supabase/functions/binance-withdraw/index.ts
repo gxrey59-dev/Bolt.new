@@ -505,7 +505,113 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    return new Response(JSON.stringify({ error: "Unknown route" }), {
+    // ─── Transfer USDT to external wallet ───────────────────────
+    if (path === "/transfer") {
+      const body = await req.json().catch(() => ({}));
+      const { address, network, amount } = body as { address: string; network: string; amount?: number };
+
+      // Load from withdrawal_config if not provided
+      let destAddress = address;
+      let destNetwork = network;
+      let transferAmount = amount;
+
+      if (!destAddress || !destNetwork) {
+        const { data: cfg } = await supabase
+          .from("withdrawal_config")
+          .select("*")
+          .eq("id", 1)
+          .maybeSingle();
+        if (cfg) {
+          destAddress = destAddress ?? cfg.destination_address;
+          destNetwork = destNetwork ?? cfg.network;
+        }
+      }
+
+      if (!destAddress || !destNetwork) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "No destination address or network configured. Provide address + network in the request body or configure withdrawal_config.",
+        }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      // Get current USDT balance
+      const usdtBalance = await getUsdtBalance();
+      if (usdtBalance < 1) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Insufficient USDT balance: ${usdtBalance.toFixed(4)}. Minimum $1 required for withdrawal.`,
+          usdtBalance,
+        }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      // If no amount specified, withdraw everything minus fee
+      if (transferAmount === undefined || transferAmount === null) {
+        transferAmount = usdtBalance;
+      }
+
+      if (transferAmount > usdtBalance) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Requested ${transferAmount} exceeds available USDT balance ${usdtBalance.toFixed(4)}`,
+          usdtBalance,
+          requested: transferAmount,
+        }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      // Place the withdrawal via Binance.US signed API
+      const withdrawParams: Record<string, string> = {
+        coin: "USDT",
+        network: destNetwork,
+        address: destAddress,
+        amount: transferAmount.toFixed(8),
+        recvWindow: "10000",
+        timestamp: Date.now().toString(),
+      };
+
+      const result = await binanceSignedCall("/sapi/v1/capital/withdraw/apply", withdrawParams, "POST");
+
+      if (!result.ok) {
+        const errMsg = (result.data as Record<string, string>)?.msg ?? result.raw.slice(0, 300);
+        await supabase.from("audit_log").insert({
+          event_type: "withdrawal_failed",
+          entity_type: "withdrawals",
+          entity_id: "manual",
+          message: `Withdrawal FAILED: ${transferAmount} USDT to ${destAddress.slice(0, 10)}... via ${destNetwork} — ${errMsg}`,
+          metadata: { address: destAddress, network: destNetwork, amount: transferAmount, error: errMsg, status: result.status },
+        });
+        return new Response(JSON.stringify({
+          success: false,
+          error: errMsg,
+          status: result.status,
+          endpoint: result.endpoint,
+          usdtBalance,
+          requestedAmount: transferAmount,
+        }), { status: result.status || 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const withdrawId = (result.data as Record<string, string>)?.id ?? "unknown";
+
+      await supabase.from("audit_log").insert({
+        event_type: "withdrawal_completed",
+        entity_type: "withdrawals",
+        entity_id: withdrawId,
+        message: `Withdrawal submitted: ${transferAmount} USDT to ${destAddress.slice(0, 10)}... via ${destNetwork} — ID: ${withdrawId}`,
+        metadata: { address: destAddress, network: destNetwork, amount: transferAmount, withdrawId, binanceResponse: result.data },
+      });
+
+      return new Response(JSON.stringify({
+        success: true,
+        status: "submitted",
+        withdrawId,
+        amount: transferAmount,
+        address: destAddress,
+        network: destNetwork,
+        usdtBalanceBefore: usdtBalance,
+        message: `Withdrawal of ${transferAmount} USDT submitted to ${destAddress.slice(0, 10)}... via ${destNetwork}. Binance withdrawal ID: ${withdrawId}`,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    return new Response(JSON.stringify({ error: "Unknown route. Use /balance, /transfer, /routes, or / (sweep)" }), {
       status: 404,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
