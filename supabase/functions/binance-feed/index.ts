@@ -236,7 +236,7 @@ function calculateVolumeSMA(candles: Candle[], period: number = 20): number {
 // Minimum confluence score of 3 factors required to enter a trade.
 // This dramatically increases win rate by only entering high-probability setups.
 
-const MIN_CONFLUENCE = 2;
+const MIN_CONFLUENCE = 1.5;
 
 interface ConfluenceFactor {
   name: string;
@@ -1076,15 +1076,15 @@ Deno.serve(async (req: Request) => {
             continue;
           }
 
-          // In live mode: only one trade at a time (all-in on the best signal)
+          // In live mode: allow up to 3 concurrent trades for diversification
           if (!config.paperMode) {
             const { data: liveOpen } = await supabase
               .from("paper_trades")
               .select("id")
               .eq("status", "open")
               .eq("is_live", true)
-              .limit(1);
-            if (liveOpen && liveOpen.length > 0) {
+              .limit(3);
+            if (liveOpen && liveOpen.length >= 3) {
               signals.push({
                 symbol, faction: factionId, strategy: signal.strategy, side: signal.side,
                 reasoning: signal.reasoning, price: currentPrice, strength: signal.strength,
