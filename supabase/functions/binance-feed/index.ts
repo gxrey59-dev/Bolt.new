@@ -570,9 +570,10 @@ async function checkKillSwitch(config: FullConfig): Promise<{ tripped: boolean; 
   const capital = config.paperMode ? config.startingCapital : config.liveCapital;
   const maxLoss = capital * (config.maxDailyLossPct / 100);
 
-  if (dailyAccumulator >= maxLoss) {
-    await tripKillSwitch(`Daily loss limit reached: $${dailyAccumulator.toFixed(2)} >= $${maxLoss.toFixed(2)} (${config.maxDailyLossPct}% of $${capital})`);
-    return { tripped: true, reason: `Daily loss limit: $${dailyAccumulator.toFixed(2)}` };
+  // Guard: don't trip on $0 capital — that means no funds deployed, not a loss breach
+  if (maxLoss > 0 && dailyAccumulator >= maxLoss) {
+    await tripKillSwitch(`Daily loss limit reached: ${dailyAccumulator.toFixed(2)} >= ${maxLoss.toFixed(2)} (${config.maxDailyLossPct}% of ${capital})`);
+    return { tripped: true, reason: `Daily loss limit: ${dailyAccumulator.toFixed(2)}` };
   }
 
   return { tripped: false, reason: null };
@@ -977,6 +978,15 @@ Deno.serve(async (req: Request) => {
     if (path === "/scan") {
       const config = await getStrategyConfig();
 
+      // Refresh live capital from Binance before anything else
+      if (!config.paperMode) {
+        const liveBalance = await getLiveUsdtBalance();
+        if (liveBalance !== config.liveCapital) {
+          await supabase.from("strategy_config").update({ live_capital: liveBalance }).eq("id", 1);
+          config.liveCapital = liveBalance;
+        }
+      }
+
       // Kill switch check — hard stop
       const ks = await checkKillSwitch(config);
       if (ks.tripped) {
@@ -1136,8 +1146,8 @@ Deno.serve(async (req: Request) => {
         const newAccumulator = config.dailyLossAccumulator + totalLoss;
         const capital = config.paperMode ? config.startingCapital : config.liveCapital;
         const maxLoss = capital * (config.maxDailyLossPct / 100);
-        if (newAccumulator >= maxLoss) {
-          await tripKillSwitch(`Daily loss limit reached: $${newAccumulator.toFixed(2)} >= $${maxLoss.toFixed(2)}`);
+        if (maxLoss > 0 && newAccumulator >= maxLoss) {
+          await tripKillSwitch(`Daily loss limit reached: ${newAccumulator.toFixed(2)} >= ${maxLoss.toFixed(2)}`);
         }
       }
 
