@@ -692,6 +692,8 @@ async function executeTrade(
     status: "open",
     stop_loss: stopLoss,
     take_profit: takeProfit,
+    remaining_quantity: quantity,
+    peak_price: currentPrice,
     reasoning: signal.reasoning,
     is_live: isLive,
     binance_order_id: binanceOrderId,
@@ -743,7 +745,13 @@ async function executeTrade(
   return { tradeId: trade.id, reasoning: signal.reasoning, error: null };
 }
 
-async function checkOpenPositions(currentPrices: Map<string, number>, config: FullConfig): Promise<{ closed: number; totalLoss: number }> {
+interface PriceData {
+  close: number;
+  high: number;
+  low: number;
+}
+
+async function checkOpenPositions(currentPrices: Map<string, number>, config: FullConfig, priceData?: Map<string, PriceData>): Promise<{ closed: number; totalLoss: number }> {
   const { data: openTrades } = await supabase.from("paper_trades").select("*").eq("status", "open");
   if (!openTrades || openTrades.length === 0) return { closed: 0, totalLoss: 0 };
 
@@ -755,6 +763,11 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
     const currentPrice = currentPrices.get(trade.symbol);
     if (!currentPrice) continue;
 
+    // Use intrabar high/low to catch TP/SL hits that happen between scans
+    const pd = priceData?.get(trade.symbol);
+    const intrabarHigh = pd?.high ?? currentPrice;
+    const intrabarLow = pd?.low ?? currentPrice;
+
     const isLong = trade.side === "long";
     const entry = Number(trade.entry_price);
     let stop = Number(trade.stop_loss);
@@ -762,15 +775,33 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
     const openedAt = new Date(trade.opened_at);
     const hoursOpen = (Date.now() - openedAt.getTime()) / (1000 * 60 * 60);
 
+    // Track peak price since entry — never lose the highest price seen
+    const peakPrice = Number(trade.peak_price ?? entry);
+    const newPeak = isLong ? Math.max(peakPrice, intrabarHigh) : Math.min(peakPrice, intrabarLow);
+    if (newPeak !== peakPrice) {
+      await supabase.from("paper_trades").update({
+        peak_price: newPeak,
+        peak_price_at: new Date().toISOString(),
+      }).eq("id", trade.id);
+    }
+
     const profitPct = isLong
       ? ((currentPrice - entry) / entry) * 100
       : ((entry - currentPrice) / entry) * 100;
+    const peakProfitPct = isLong
+      ? ((newPeak - entry) / entry) * 100
+      : ((entry - newPeak) / entry) * 100;
 
-    // Trailing stop: once profit exceeds 2%, trail at 1.5% behind
-    if (profitPct >= 2) {
+    const hasPartialExit = trade.partial_exit_price !== null;
+    const remainingQty = Number(trade.remaining_quantity ?? trade.quantity);
+    // After partial exit: trail tighter (0.8%) to protect profits on the runner
+    const trailPct = hasPartialExit ? 0.8 : 1.5;
+
+    // Trailing stop: once profit exceeds 2%, trail behind the peak
+    if (peakProfitPct >= 2) {
       const newStop = isLong
-        ? currentPrice * (1 - 1.5 / 100)
-        : currentPrice * (1 + 1.5 / 100);
+        ? newPeak * (1 - trailPct / 100)
+        : newPeak * (1 + trailPct / 100);
       const stopImproved = isLong ? newStop > stop : newStop < stop;
       if (stopImproved) {
         stop = newStop;
@@ -778,7 +809,7 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
       }
     }
     // Breakeven stop: once profit exceeds 1%, move stop to entry
-    else if (profitPct >= 1) {
+    else if (peakProfitPct >= 1) {
       const stopImproved = isLong ? entry > stop : entry < stop;
       if (stopImproved) {
         stop = entry;
@@ -788,97 +819,174 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
 
     let shouldClose = false;
     let closeReason = "";
+    let isPartialClose = false;
 
     // Time-based exit: close after 48 hours regardless
     if (hoursOpen >= 48) {
       shouldClose = true;
       closeReason = `Time exit (${hoursOpen.toFixed(0)}h open)`;
     }
-    // Trailing / breakeven stop
-    else if (isLong && currentPrice <= stop) {
+    // Trailing / breakeven stop — check against intrabar low (long) or high (short)
+    else if (isLong && intrabarLow <= stop) {
       shouldClose = true;
-      closeReason = profitPct >= 1 ? `Trailing stop at ${currentPrice.toFixed(4)}` : `Stop loss hit at ${currentPrice.toFixed(4)}`;
-    } else if (!isLong && currentPrice >= stop) {
+      const exitPrice = Math.min(currentPrice, stop);
+      closeReason = peakProfitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
+    } else if (!isLong && intrabarHigh >= stop) {
       shouldClose = true;
-      closeReason = profitPct >= 1 ? `Trailing stop at ${currentPrice.toFixed(4)}` : `Stop loss hit at ${currentPrice.toFixed(4)}`;
+      const exitPrice = Math.max(currentPrice, stop);
+      closeReason = peakProfitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
     }
-    // Take profit
-    else if (isLong && currentPrice >= target) {
-      shouldClose = true;
-      closeReason = `Take profit hit at ${currentPrice.toFixed(4)}`;
-    } else if (!isLong && currentPrice <= target) {
-      shouldClose = true;
-      closeReason = `Take profit hit at ${currentPrice.toFixed(4)}`;
+    // Take profit — check against intrabar high (long) or low (short) to catch spikes
+    // First TP hit: sell 50% and let the rest ride. Second hit: close remaining.
+    else if (isLong && intrabarHigh >= target) {
+      if (!hasPartialExit) {
+        isPartialClose = true;
+        shouldClose = true;
+        closeReason = `Partial take profit at ${target.toFixed(4)} — 50% sold (peak: ${newPeak.toFixed(4)})`;
+      } else {
+        shouldClose = true;
+        const exitPrice = Math.max(currentPrice, target);
+        closeReason = `Take profit hit at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})`;
+      }
+    } else if (!isLong && intrabarLow <= target) {
+      if (!hasPartialExit) {
+        isPartialClose = true;
+        shouldClose = true;
+        closeReason = `Partial take profit at ${target.toFixed(4)} — 50% sold (peak: ${newPeak.toFixed(4)})`;
+      } else {
+        shouldClose = true;
+        const exitPrice = Math.min(currentPrice, target);
+        closeReason = `Take profit hit at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})`;
+      }
     }
 
     if (shouldClose) {
-      const quantity = Number(trade.quantity);
-      const pnl = isLong ? (currentPrice - entry) * quantity : (entry - currentPrice) * quantity;
       const isLive = trade.is_live ?? false;
 
-      // For live trades, place a market close order
-      let closeOrderId: string | null = null;
-      if (isLive && trade.binance_order_id) {
-        const closeSide = isLong ? "SELL" : "BUY";
-        const closeResult = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", quantity, true);
-        closeOrderId = closeResult.orderId;
-      }
+      if (isPartialClose) {
+        // ─── Partial exit: sell 50% at target, keep 50% riding ───
+        const partialQty = remainingQty * 0.5;
+        const newRemainingQty = remainingQty - partialQty;
+        const partialPnl = isLong ? (target - entry) * partialQty : (entry - target) * partialQty;
 
-      await supabase.from("paper_trades").update({
-        status: "closed",
-        exit_price: currentPrice,
-        pnl,
-        closed_at: new Date().toISOString(),
-        binance_close_order_id: closeOrderId,
-      }).eq("id", trade.id);
-
-      const { data: faction } = await supabase
-        .from("factions")
-        .select("paper_balance, open_positions, profit_today, loss_today, trades_today, win_rate, consecutive_losses")
-        .eq("id", trade.faction_id)
-        .maybeSingle();
-
-      if (faction) {
-        const returnedCapital = Number(trade.position_value) + pnl;
-        const newBalance = isLive ? returnedCapital : Number(faction.paper_balance) + returnedCapital;
-        const isWin = pnl >= 0;
-        const newTrades = (faction.trades_today ?? 0) + 1;
-        const newWinRate = isWin
-          ? (Number(faction.win_rate ?? 0) * (newTrades - 1) + 100) / newTrades
-          : (Number(faction.win_rate ?? 0) * (newTrades - 1)) / newTrades;
-        const newConsecLosses = !isWin ? (faction.consecutive_losses ?? 0) + 1 : 0;
-
-        await supabase.from("factions").update({
-          paper_balance: newBalance,
-          open_positions: Math.max(0, (faction.open_positions ?? 0) - 1),
-          profit_today: Number(faction.profit_today ?? 0) + (pnl > 0 ? pnl : 0),
-          loss_today: Number(faction.loss_today ?? 0) + (pnl < 0 ? Math.abs(pnl) : 0),
-          trades_today: newTrades,
-          win_rate: Math.round(newWinRate * 100) / 100,
-          consecutive_losses: newConsecLosses,
-          updated_at: new Date().toISOString(),
-        }).eq("id", trade.faction_id);
-
-        // Accumulate daily loss for kill switch
-        if (pnl < 0) {
-          totalLoss += Math.abs(pnl);
+        let partialOrderId: string | null = null;
+        if (isLive && trade.binance_order_id) {
+          const closeSide = isLong ? "SELL" : "BUY";
+          const partialResult = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", partialQty, true);
+          partialOrderId = partialResult.orderId;
         }
+
+        await supabase.from("paper_trades").update({
+          partial_exit_price: target,
+          partial_exit_at: new Date().toISOString(),
+          partial_exit_pnl: partialPnl,
+          remaining_quantity: newRemainingQty,
+        }).eq("id", trade.id);
+
+        // Credit partial profit to faction balance
+        const { data: faction } = await supabase
+          .from("factions")
+          .select("paper_balance, profit_today, loss_today, trades_today, win_rate")
+          .eq("id", trade.faction_id)
+          .maybeSingle();
+
+        if (faction) {
+          const partialPositionValue = Number(trade.position_value) * 0.5;
+          const returnedCapital = isLive ? partialPositionValue + partialPnl : partialPositionValue + partialPnl;
+          await supabase.from("factions").update({
+            paper_balance: isLive ? returnedCapital : Number(faction.paper_balance) + returnedCapital,
+            profit_today: Number(faction.profit_today ?? 0) + (partialPnl > 0 ? partialPnl : 0),
+            loss_today: Number(faction.loss_today ?? 0) + (partialPnl < 0 ? Math.abs(partialPnl) : 0),
+            updated_at: new Date().toISOString(),
+          }).eq("id", trade.faction_id);
+        }
+
+        await supabase.from("audit_log").insert({
+          event_type: isLive ? "live_partial_close" : "paper_partial_close",
+          entity_type: "paper_trades",
+          entity_id: trade.id,
+          message: `${isLive ? "LIVE" : "PAPER"}: ${trade.faction_id} partial close ${trade.side.toUpperCase()} on ${trade.symbol} — ${closeReason}. P&L: ${partialPnl >= 0 ? "+" : ""}${partialPnl.toFixed(4)}${partialOrderId ? ` [Order: ${partialOrderId}]` : ""}`,
+          metadata: {
+            faction_id: trade.faction_id, symbol: trade.symbol, side: trade.side,
+            strategy: trade.strategy, entry_price: entry, partial_exit_price: target,
+            partial_pnl: partialPnl, partial_qty: partialQty, remaining_qty: newRemainingQty,
+            reason: closeReason, is_live: isLive, binance_partial_order_id: partialOrderId,
+          },
+        });
+
+        if (isLive) liveNetPnl += partialPnl;
+        closedCount++;
+      } else {
+        // ─── Full close (stop, trailing, time, or second TP hit) ───
+        const quantity = remainingQty;
+        const pnl = isLong ? (currentPrice - entry) * quantity : (entry - currentPrice) * quantity;
+        const partialPnl = Number(trade.partial_exit_pnl ?? 0);
+        const totalPnl = pnl + partialPnl;
+
+        let closeOrderId: string | null = null;
+        if (isLive && trade.binance_order_id) {
+          const closeSide = isLong ? "SELL" : "BUY";
+          const closeResult = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", quantity, true);
+          closeOrderId = closeResult.orderId;
+        }
+
+        await supabase.from("paper_trades").update({
+          status: "closed",
+          exit_price: currentPrice,
+          pnl: totalPnl,
+          closed_at: new Date().toISOString(),
+          binance_close_order_id: closeOrderId,
+        }).eq("id", trade.id);
+
+        const { data: faction } = await supabase
+          .from("factions")
+          .select("paper_balance, open_positions, profit_today, loss_today, trades_today, win_rate, consecutive_losses")
+          .eq("id", trade.faction_id)
+          .maybeSingle();
+
+        if (faction) {
+          const remainingPositionValue = Number(trade.position_value) * (remainingQty / Number(trade.quantity));
+          const returnedCapital = isLive ? remainingPositionValue + pnl : Number(faction.paper_balance) + remainingPositionValue + pnl;
+          const isWin = totalPnl >= 0;
+          const newTrades = (faction.trades_today ?? 0) + 1;
+          const newWinRate = isWin
+            ? (Number(faction.win_rate ?? 0) * (newTrades - 1) + 100) / newTrades
+            : (Number(faction.win_rate ?? 0) * (newTrades - 1)) / newTrades;
+          const newConsecLosses = !isWin ? (faction.consecutive_losses ?? 0) + 1 : 0;
+
+          await supabase.from("factions").update({
+            paper_balance: returnedCapital,
+            open_positions: Math.max(0, (faction.open_positions ?? 0) - 1),
+            profit_today: Number(faction.profit_today ?? 0) + (pnl > 0 ? pnl : 0),
+            loss_today: Number(faction.loss_today ?? 0) + (pnl < 0 ? Math.abs(pnl) : 0),
+            trades_today: newTrades,
+            win_rate: Math.round(newWinRate * 100) / 100,
+            consecutive_losses: newConsecLosses,
+            updated_at: new Date().toISOString(),
+          }).eq("id", trade.faction_id);
+
+          if (totalPnl < 0) {
+            totalLoss += Math.abs(totalPnl);
+          }
+        }
+
+        await supabase.from("audit_log").insert({
+          event_type: isLive ? "live_trade_close" : "paper_trade_close",
+          entity_type: "paper_trades",
+          entity_id: trade.id,
+          message: `${isLive ? "LIVE" : "PAPER"}: ${trade.faction_id} closed ${trade.side.toUpperCase()} on ${trade.symbol} — ${closeReason}. P&L: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(4)}${closeOrderId ? ` [Order: ${closeOrderId}]` : ""}`,
+          metadata: {
+            faction_id: trade.faction_id, symbol: trade.symbol, side: trade.side,
+            strategy: trade.strategy, entry_price: entry, exit_price: currentPrice,
+            pnl: totalPnl, runner_pnl: pnl, partial_pnl: partialPnl,
+            reason: closeReason, is_live: isLive, binance_close_order_id: closeOrderId,
+            peak_price: newPeak,
+          },
+        });
+
+        if (isLive) liveNetPnl += pnl;
+        closedCount++;
       }
-
-      await supabase.from("audit_log").insert({
-        event_type: isLive ? "live_trade_close" : "paper_trade_close",
-        entity_type: "paper_trades",
-        entity_id: trade.id,
-        message: `${isLive ? "LIVE" : "PAPER"}: ${trade.faction_id} closed ${trade.side.toUpperCase()} on ${trade.symbol} — ${closeReason}. P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)}${closeOrderId ? ` [Order: ${closeOrderId}]` : ""}`,
-        metadata: {
-          faction_id: trade.faction_id, symbol: trade.symbol, side: trade.side,
-          strategy: trade.strategy, entry_price: entry, exit_price: currentPrice,
-          pnl, reason: closeReason, is_live: isLive, binance_close_order_id: closeOrderId,
-        },
-      });
-
-      if (isLive) liveNetPnl += pnl;
-      closedCount++;
     }
   }
 
@@ -993,7 +1101,8 @@ Deno.serve(async (req: Request) => {
         // Force-close all open positions
         const tickers = await fetchTickers(TRADING_PAIRS);
         const priceMap = new Map(tickers.map((t) => [t.symbol, t.price]));
-        await checkOpenPositions(priceMap, config);
+        const ksPriceData = new Map(tickers.map((t) => [t.symbol, { close: t.price, high: t.high, low: t.low }]));
+        await checkOpenPositions(priceMap, config, ksPriceData);
 
         return new Response(JSON.stringify({
           scanned: 0, signals: 0, tradesOpened: 0, tradesClosed: 0,
@@ -1020,6 +1129,7 @@ Deno.serve(async (req: Request) => {
         skippedByWinRate: boolean;
       }> = [];
       const currentPrices = new Map<string, number>();
+      const priceDataMap = new Map<string, PriceData>();
       const tradesOpened: string[] = [];
 
       const candleResults = await Promise.all(
@@ -1037,6 +1147,7 @@ Deno.serve(async (req: Request) => {
         if (error || candles.length < 50) continue;
         const currentPrice = candles[candles.length - 1].close;
         currentPrices.set(symbol, currentPrice);
+        priceDataMap.set(symbol, { close: currentPrice, high: candles[candles.length - 1].high, low: candles[candles.length - 1].low });
 
         const signal = evaluateStrategies(candles, currentPrice, {
           rsiOversold: config.rsiOversold,
@@ -1139,7 +1250,7 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      const { closed, totalLoss } = await checkOpenPositions(currentPrices, config);
+      const { closed, totalLoss } = await checkOpenPositions(currentPrices, config, priceDataMap);
 
       // Check if daily loss limit was hit after closing trades
       if (totalLoss > 0) {
@@ -1219,14 +1330,26 @@ Deno.serve(async (req: Request) => {
       const positionsWithPnL = (openTrades ?? []).map((trade) => {
         const currentPrice = priceMap.get(trade.symbol) ?? Number(trade.entry_price);
         const isLong = trade.side === "long";
+        const remainingQty = Number(trade.remaining_quantity ?? trade.quantity);
         const unrealizedPnl = isLong
-          ? (currentPrice - Number(trade.entry_price)) * Number(trade.quantity)
-          : (Number(trade.entry_price) - currentPrice) * Number(trade.quantity);
+          ? (currentPrice - Number(trade.entry_price)) * remainingQty
+          : (Number(trade.entry_price) - currentPrice) * remainingQty;
+        const partialPnl = Number(trade.partial_exit_pnl ?? 0);
+        const peakPrice = Number(trade.peak_price ?? trade.entry_price);
+        const peakPnl = isLong
+          ? (peakPrice - Number(trade.entry_price)) * remainingQty
+          : (Number(trade.entry_price) - peakPrice) * remainingQty;
         return {
           ...trade,
           current_price: currentPrice,
-          unrealized_pnl: unrealizedPnl,
-          pnl_pct: (unrealizedPnl / Number(trade.position_value)) * 100,
+          unrealized_pnl: unrealizedPnl + partialPnl,
+          runner_pnl: unrealizedPnl,
+          partial_pnl: partialPnl,
+          pnl_pct: ((unrealizedPnl + partialPnl) / Number(trade.position_value)) * 100,
+          peak_price: peakPrice,
+          peak_pnl: peakPnl + partialPnl,
+          has_partial_exit: trade.partial_exit_price !== null,
+          remaining_quantity: remainingQty,
         };
       });
 
@@ -1240,7 +1363,8 @@ Deno.serve(async (req: Request) => {
       const config = await getStrategyConfig();
       const tickers = await fetchTickers(TRADING_PAIRS);
       const priceMap = new Map(tickers.map((t) => [t.symbol, t.price]));
-      const { closed } = await checkOpenPositions(priceMap, config);
+      const closeAllPriceData = new Map(tickers.map((t) => [t.symbol, { close: t.price, high: t.high, low: t.low }]));
+      const { closed } = await checkOpenPositions(priceMap, config, closeAllPriceData);
 
       const { data: stillOpen } = await supabase.from("paper_trades").select("*").eq("status", "open");
       let forceClosed = 0;
@@ -1249,13 +1373,15 @@ Deno.serve(async (req: Request) => {
         for (const trade of stillOpen) {
           const currentPrice = priceMap.get(trade.symbol) ?? Number(trade.entry_price);
           const isLong = trade.side === "long";
-          const pnl = isLong ? (currentPrice - Number(trade.entry_price)) * Number(trade.quantity) : (Number(trade.entry_price) - currentPrice) * Number(trade.quantity);
+          const remainingQty = Number(trade.remaining_quantity ?? trade.quantity);
+          const partialPnl = Number(trade.partial_exit_pnl ?? 0);
+          const pnl = (isLong ? (currentPrice - Number(trade.entry_price)) : (Number(trade.entry_price) - currentPrice)) * remainingQty + partialPnl;
           const isLive = trade.is_live ?? false;
 
           let closeOrderId: string | null = null;
           if (isLive && trade.binance_order_id) {
             const closeSide = isLong ? "SELL" : "BUY";
-            const closeResult = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", Number(trade.quantity), true);
+            const closeResult = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", remainingQty, true);
             closeOrderId = closeResult.orderId;
           }
 
@@ -1271,9 +1397,10 @@ Deno.serve(async (req: Request) => {
             .maybeSingle();
 
           if (faction) {
-            const returnedCapital = Number(trade.position_value) + pnl;
+            const remainingPositionValue = Number(trade.position_value) * (remainingQty / Number(trade.quantity));
+            const returnedCapital = isLive ? remainingPositionValue + (pnl - partialPnl) : Number(faction.paper_balance) + remainingPositionValue + (pnl - partialPnl);
             await supabase.from("factions").update({
-              paper_balance: isLive ? returnedCapital : Number(faction.paper_balance) + returnedCapital,
+              paper_balance: returnedCapital,
               open_positions: Math.max(0, (faction.open_positions ?? 0) - 1),
               profit_today: Number(faction.profit_today ?? 0) + (pnl > 0 ? pnl : 0),
               loss_today: Number(faction.loss_today ?? 0) + (pnl < 0 ? Math.abs(pnl) : 0),

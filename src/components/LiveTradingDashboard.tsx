@@ -463,6 +463,9 @@ export default function LiveTradingDashboard() {
               const target = Number(p.take_profit);
               const liveTrade = (p as OpenPosition & { is_live?: boolean }).is_live;
               const stratColor = strategyColors[p.strategy] ?? '#a1a1aa';
+              const peakPrice = (p as OpenPosition & { peak_price?: number }).peak_price;
+              const hasPartialExit = (p as OpenPosition & { has_partial_exit?: boolean }).has_partial_exit;
+              const partialPnl = (p as OpenPosition & { partial_pnl?: number }).partial_pnl ?? 0;
 
               // Distance to SL/TP in %
               const distToSL = isLong ? ((entry - stop) / entry) * 100 : ((stop - entry) / entry) * 100;
@@ -525,6 +528,12 @@ export default function LiveTradingDashboard() {
                       <span>Current:</span>
                       <span className="font-mono tabular-nums text-zinc-400">${current.toFixed(2)}</span>
                     </div>
+                    {peakPrice && Number(peakPrice) > 0 && (
+                      <div className="flex items-center gap-1 text-zinc-600">
+                        <TrendingUp className="h-2.5 w-2.5 text-emerald-500" />
+                        <span className="font-mono tabular-nums text-emerald-400/70">${Number(peakPrice).toFixed(2)}</span>
+                      </div>
+                    )}
                     <div className="flex items-center gap-1 text-zinc-600">
                       <Clock className="h-2.5 w-2.5" />
                       <span>{Math.round((Date.now() - new Date(p.opened_at).getTime()) / 60000)}m ago</span>
@@ -533,6 +542,12 @@ export default function LiveTradingDashboard() {
                       <DollarSign className="h-2.5 w-2.5" />
                       <span>${Number(p.position_value).toFixed(2)}</span>
                     </div>
+                    {hasPartialExit && (
+                      <div className="flex items-center gap-1 text-zinc-600">
+                        <span className="rounded bg-amber-500/20 px-1 text-[9px] font-bold text-amber-400">50% SOLD</span>
+                        <span className="font-mono tabular-nums text-amber-400/70">+${partialPnl.toFixed(2)}</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Strategy tag */}
