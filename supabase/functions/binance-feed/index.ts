@@ -1459,7 +1459,74 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    return new Response(JSON.stringify({ error: "Unknown route. Use /prices, /indicators, /scan, /positions, /close-all, /config, /kill-switch, or /account" }), {
+    // ─── POST /sell-dust — sell all non-USDT balances for USDT ─────
+    if (path === "/sell-dust") {
+      if (!BINANCE_API_KEY || !BINANCE_SECRET_KEY) {
+        return new Response(JSON.stringify({ error: "Binance API keys not configured" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      try {
+        const ts = Date.now();
+        const params = new URLSearchParams({ recvWindow: "10000", timestamp: ts.toString() });
+        const sig = await hmacSha256(BINANCE_SECRET_KEY, params.toString());
+        const res = await fetch(`${BINANCE_BASE}/api/v3/account?${params.toString()}&signature=${sig}`, {
+          headers: { "X-MBX-APIKEY": BINANCE_API_KEY },
+        });
+        const data = await res.json();
+        if (data.code) {
+          return new Response(JSON.stringify({ error: data.msg, code: data.code }), {
+            status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const filters = await getSymbolFilters();
+        const sold: Array<{ asset: string; qty: number; usdtValue: number; orderId: string | null; error: string | null }> = [];
+
+        for (const b of (data.balances ?? []) as Array<{ asset: string; free: string; locked: string }>) {
+          if (b.asset === "USDT") continue;
+          const free = parseFloat(b.free);
+          if (free <= 0) continue;
+
+          const symbol = `${b.asset}USDT`;
+          const f = filters.get(symbol);
+          if (!f) continue;
+
+          let qty = roundToStep(free, f.stepSize);
+          if (qty < f.minQty) continue;
+
+          const result = await placeBinanceOrder(symbol, "SELL", qty, true);
+          let usdtValue = 0;
+          if (result.orderId) {
+            try {
+              const tRes = await fetch(`${BINANCE_BASE}/api/v3/ticker/price?symbol=${symbol}`);
+              const tData = await tRes.json();
+              usdtValue = parseFloat(tData.price) * qty;
+            } catch { /* price fetch is best-effort */ }
+          }
+
+          sold.push({ asset: b.asset, qty, usdtValue, orderId: result.orderId, error: result.error });
+
+          await supabase.from("audit_log").insert({
+            event_type: "dust_conversion",
+            entity_type: "binance",
+            entity_id: result.orderId ?? "failed",
+            message: `Sold ${qty} ${b.asset} for USDT${result.error ? ` — ERROR: ${result.error}` : ""}`,
+            metadata: { asset: b.asset, qty, usdt_value: usdtValue, order_id: result.orderId, error: result.error },
+          });
+        }
+
+        return new Response(JSON.stringify({ sold, count: sold.length }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    return new Response(JSON.stringify({ error: "Unknown route. Use /prices, /indicators, /scan, /positions, /close-all, /sell-dust, /config, /kill-switch, or /account" }), {
       status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
