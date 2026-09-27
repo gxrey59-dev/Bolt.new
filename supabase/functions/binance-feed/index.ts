@@ -238,7 +238,7 @@ function calculateVolumeSMA(candles: Candle[], period: number = 20): number {
 // Minimum confluence score of 3 factors required to enter a trade.
 // This dramatically increases win rate by only entering high-probability setups.
 
-const MIN_CONFLUENCE = 1.5;
+const MIN_CONFLUENCE = 3.0;
 
 interface ConfluenceFactor {
   name: string;
@@ -343,9 +343,9 @@ function evaluateStrategies(
 
   const signals: StrategySignal[] = [];
 
-  // Soft trend filter: prefer trend-aligned trades but allow one condition to qualify
-  const isUptrend = currentPrice > ind.sma50 || ind.ema12 > ind.ema26;
-  const isDowntrend = currentPrice < ind.sma50 || ind.ema12 < ind.ema26;
+  // Strict trend filter: both conditions must agree to enter
+  const isUptrend = currentPrice > ind.sma50 && ind.ema12 > ind.ema26;
+  const isDowntrend = currentPrice < ind.sma50 && ind.ema12 < ind.ema26;
 
   // Long entry: need minimum confluence score from bullish factors + uptrend confirmation
   if (longScore >= MIN_CONFLUENCE && longScore > shortScore && isUptrend) {
@@ -652,13 +652,13 @@ async function executeTrade(
   }
 
   const isLong = signal.side === "long";
-  // ATR-based stop loss — wider stops for volatile assets, tighter for calm ones
+  // ATR-based stop loss — tighter stops to cut losses fast
   const atr = signal.indicators.atr;
   const atrPctOfPrice = atr > 0 ? (atr / currentPrice) * 100 : config.stopLossPct;
-  // Use configured SL, but allow ATR to tighten it (not widen) to avoid noise stops
-  const effectiveStopPct = Math.min(config.stopLossPct, Math.max(atrPctOfPrice * 1.2, 1.5));
-  // Take profit at 1.5x the stop distance for consistent wins
-  const effectiveTpPct = Math.min(config.takeProfitPct, effectiveStopPct * 1.5);
+  // Use configured SL, tightened by ATR but never wider than config
+  const effectiveStopPct = Math.min(config.stopLossPct, Math.max(atrPctOfPrice * 0.8, 0.5));
+  // Take profit at 3x the stop distance — let winners run for bigger gains
+  const effectiveTpPct = Math.max(config.takeProfitPct, effectiveStopPct * 3);
   const stopLoss = isLong ? currentPrice * (1 - effectiveStopPct / 100) : currentPrice * (1 + effectiveStopPct / 100);
   const takeProfit = isLong ? currentPrice * (1 + effectiveTpPct / 100) : currentPrice * (1 - effectiveTpPct / 100);
 
@@ -796,12 +796,12 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
 
     const hasPartialExit = trade.partial_exit_price !== null;
     const remainingQty = Number(trade.remaining_quantity ?? trade.quantity);
-    // After partial exit: trail tighter (0.8%) to protect profits on the runner
-    const trailPct = hasPartialExit ? 0.8 : 1.5;
+    // After partial exit: trail tighter (1.2%) to protect profits on the runner
+    const trailPct = hasPartialExit ? 1.2 : 2.0;
 
-    // Trailing stop: once close-based profit exceeds 2%, trail behind the peak
+    // Trailing stop: once close-based profit exceeds 3%, trail behind the peak
     // Use profitPct (close) not peakProfitPct to activate — prevents churn from intrabar spikes
-    if (profitPct >= 2) {
+    if (profitPct >= 3) {
       const newStop = isLong
         ? newPeak * (1 - trailPct / 100)
         : newPeak * (1 + trailPct / 100);
@@ -811,8 +811,8 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
         await supabase.from("paper_trades").update({ stop_loss: newStop }).eq("id", trade.id);
       }
     }
-    // Breakeven stop: once close-based profit exceeds 1%, move stop to entry
-    else if (profitPct >= 1) {
+    // Breakeven stop: once close-based profit exceeds 1.5%, move stop to entry
+    else if (profitPct >= 1.5) {
       const stopImproved = isLong ? entry > stop : entry < stop;
       if (stopImproved) {
         stop = entry;
