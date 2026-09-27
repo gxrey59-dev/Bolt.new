@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem } from 'lucide-react';
+import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { runStrategyScan, updateFactionStats } from '@/lib/engine';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
@@ -18,6 +18,7 @@ import PaperTradingPanel from '@/components/PaperTradingPanel';
 import BacktestPanel from '@/components/BacktestPanel';
 import LiveTradingDashboard from '@/components/LiveTradingDashboard';
 import NFTCollection from '@/components/NFTCollection';
+import DeFiSwarmPanel from '@/components/DeFiSwarmPanel';
 
 const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'live', label: 'Live Terminal', icon: Radio },
@@ -26,6 +27,7 @@ const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'table', label: 'Table View', icon: Table },
   { id: 'operations', label: 'Operations', icon: Settings },
   { id: 'nft', label: 'NFT Armory', icon: Gem },
+  { id: 'swarm', label: 'DeFi Swarms', icon: Network },
 ];
 
 export default function App() {
@@ -151,6 +153,10 @@ export default function App() {
 
           {tab === 'nft' && (
             <NFTCollection />
+          )}
+
+          {tab === 'swarm' && (
+            <DeFiSwarmPanel />
           )}
         </div>
       </main>
