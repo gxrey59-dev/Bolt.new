@@ -797,8 +797,9 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
     // After partial exit: trail tighter (0.8%) to protect profits on the runner
     const trailPct = hasPartialExit ? 0.8 : 1.5;
 
-    // Trailing stop: once profit exceeds 2%, trail behind the peak
-    if (peakProfitPct >= 2) {
+    // Trailing stop: once close-based profit exceeds 2%, trail behind the peak
+    // Use profitPct (close) not peakProfitPct to activate — prevents churn from intrabar spikes
+    if (profitPct >= 2) {
       const newStop = isLong
         ? newPeak * (1 - trailPct / 100)
         : newPeak * (1 + trailPct / 100);
@@ -808,8 +809,8 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
         await supabase.from("paper_trades").update({ stop_loss: newStop }).eq("id", trade.id);
       }
     }
-    // Breakeven stop: once profit exceeds 1%, move stop to entry
-    else if (peakProfitPct >= 1) {
+    // Breakeven stop: once close-based profit exceeds 1%, move stop to entry
+    else if (profitPct >= 1) {
       const stopImproved = isLong ? entry > stop : entry < stop;
       if (stopImproved) {
         stop = entry;
@@ -821,20 +822,23 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
     let closeReason = "";
     let isPartialClose = false;
 
+    // Minimum hold: don't close trades opened less than 5 minutes ago (prevents churn)
+    const minutesOpen = hoursOpen * 60;
+
     // Time-based exit: close after 48 hours regardless
     if (hoursOpen >= 48) {
       shouldClose = true;
       closeReason = `Time exit (${hoursOpen.toFixed(0)}h open)`;
     }
-    // Trailing / breakeven stop — check against intrabar low (long) or high (short)
-    else if (isLong && intrabarLow <= stop) {
+    // Trailing / breakeven stop — only check after 5 min minimum hold
+    else if (minutesOpen >= 5 && isLong && intrabarLow <= stop) {
       shouldClose = true;
       const exitPrice = Math.min(currentPrice, stop);
-      closeReason = peakProfitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
-    } else if (!isLong && intrabarHigh >= stop) {
+      closeReason = profitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
+    } else if (minutesOpen >= 5 && !isLong && intrabarHigh >= stop) {
       shouldClose = true;
       const exitPrice = Math.max(currentPrice, stop);
-      closeReason = peakProfitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
+      closeReason = profitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
     }
     // Take profit — check against intrabar high (long) or low (short) to catch spikes
     // First TP hit: sell 50% and let the rest ride. Second hit: close remaining.
