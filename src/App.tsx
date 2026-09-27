@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { LayoutDashboard, Monitor, Table, Settings, Radio } from 'lucide-react';
+import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { runStrategyScan, updateFactionStats } from '@/lib/engine';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
@@ -17,6 +17,7 @@ import CircuitBreakerPanel from '@/components/CircuitBreakerPanel';
 import PaperTradingPanel from '@/components/PaperTradingPanel';
 import BacktestPanel from '@/components/BacktestPanel';
 import LiveTradingDashboard from '@/components/LiveTradingDashboard';
+import NFTCollection from '@/components/NFTCollection';
 
 const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'live', label: 'Live Terminal', icon: Radio },
@@ -24,6 +25,7 @@ const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'table', label: 'Table View', icon: Table },
   { id: 'operations', label: 'Operations', icon: Settings },
+  { id: 'nft', label: 'NFT Armory', icon: Gem },
 ];
 
 export default function App() {
@@ -145,6 +147,10 @@ export default function App() {
                 <AuditFeed entries={audit} />
               </div>
             </>
+          )}
+
+          {tab === 'nft' && (
+            <NFTCollection />
           )}
         </div>
       </main>
