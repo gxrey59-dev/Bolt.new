@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown } from 'lucide-react';
+import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { runStrategyScan, updateFactionStats } from '@/lib/engine';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
@@ -20,8 +20,10 @@ import LiveTradingDashboard from '@/components/LiveTradingDashboard';
 import NFTCollection from '@/components/NFTCollection';
 import DeFiSwarmPanel from '@/components/DeFiSwarmPanel';
 import RevenueCommandCenter from '@/components/RevenueCommandCenter';
+import RevenueSprintDashboard from '@/components/RevenueSprintDashboard';
 
 const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
+  { id: 'sprint', label: '24h Sprint', icon: Flame },
   { id: 'live', label: 'Live Terminal', icon: Radio },
   { id: 'command', label: 'Command Center', icon: Monitor },
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -104,6 +106,10 @@ export default function App() {
 
       <main className="mx-auto max-w-[1600px] px-6 py-6">
         <div className="space-y-8 animate-fade-in">
+          {tab === 'sprint' && (
+            <RevenueSprintDashboard />
+          )}
+
           {tab === 'live' && (
             <LiveTradingDashboard />
           )}
