@@ -635,9 +635,9 @@ async function executeTrade(
   } else {
     balance = Number(faction.paper_balance);
   }
-  if (balance < 1) return { tradeId: null, reasoning: `Insufficient balance: ${balance.toFixed(2)}`, error: null };
+  if (balance < 0.5) return { tradeId: null, reasoning: `Insufficient balance: ${balance.toFixed(2)}`, error: null };
 
-  const positionValue = isLive ? balance : Math.min(balance * (config.maxPositionPct / 100), balance * 0.5);
+  const positionValue = Math.min(balance * (config.maxPositionPct / 100), balance * 0.8);
   let quantity = positionValue / currentPrice;
 
   // For live trades: round to valid LOT_SIZE step
@@ -1207,15 +1207,15 @@ Deno.serve(async (req: Request) => {
             continue;
           }
 
-          // In live mode: allow up to 3 concurrent trades for diversification
+          // In live mode: allow up to 5 concurrent trades for diversification
           if (!config.paperMode) {
             const { data: liveOpen } = await supabase
               .from("paper_trades")
               .select("id")
               .eq("status", "open")
               .eq("is_live", true)
-              .limit(3);
-            if (liveOpen && liveOpen.length >= 3) {
+              .limit(5);
+            if (liveOpen && liveOpen.length >= 5) {
               signals.push({
                 symbol, faction: factionId, strategy: signal.strategy, side: signal.side,
                 reasoning: signal.reasoning, price: currentPrice, strength: signal.strength,
