@@ -56,6 +56,8 @@ const TRADING_PAIRS = [
   "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
   "LTCUSDT", "BCHUSDT", "ATOMUSDT", "NEARUSDT", "APTUSDT",
   "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT", "SEIUSDT",
+  "TIAUSDT", "RUNEUSDT", "FILUSDT", "IMXUSDT", "MATICUSDT",
+  "RNDRUSDT", "FTMUSDT", "SANDUSDT", "MANAUSDT", "AXSUSDT",
 ];
 
 const FACTION_IDS = [
@@ -635,7 +637,7 @@ async function executeTrade(
   } else {
     balance = Number(faction.paper_balance);
   }
-  if (balance < 0.5) return { tradeId: null, reasoning: `Insufficient balance: ${balance.toFixed(2)}`, error: null };
+  if (balance < 0.2) return { tradeId: null, reasoning: `Insufficient balance: ${balance.toFixed(2)}`, error: null };
 
   const positionValue = Math.min(balance * (config.maxPositionPct / 100), balance * 0.8);
   let quantity = positionValue / currentPrice;
@@ -831,11 +833,11 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
       closeReason = `Time exit (${hoursOpen.toFixed(0)}h open)`;
     }
     // Trailing / breakeven stop — only check after 5 min minimum hold
-    else if (minutesOpen >= 5 && isLong && intrabarLow <= stop) {
+    else if (minutesOpen >= 2 && isLong && intrabarLow <= stop) {
       shouldClose = true;
       const exitPrice = Math.min(currentPrice, stop);
       closeReason = profitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
-    } else if (minutesOpen >= 5 && !isLong && intrabarHigh >= stop) {
+    } else if (minutesOpen >= 2 && !isLong && intrabarHigh >= stop) {
       shouldClose = true;
       const exitPrice = Math.max(currentPrice, stop);
       closeReason = profitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
@@ -1211,15 +1213,15 @@ Deno.serve(async (req: Request) => {
             continue;
           }
 
-          // In live mode: allow up to 5 concurrent trades for diversification
+          // In live mode: allow up to 8 concurrent trades for diversification
           if (!config.paperMode) {
             const { data: liveOpen } = await supabase
               .from("paper_trades")
               .select("id")
               .eq("status", "open")
               .eq("is_live", true)
-              .limit(5);
-            if (liveOpen && liveOpen.length >= 5) {
+              .limit(8);
+            if (liveOpen && liveOpen.length >= 8) {
               signals.push({
                 symbol, faction: factionId, strategy: signal.strategy, side: signal.side,
                 reasoning: signal.reasoning, price: currentPrice, strength: signal.strength,
