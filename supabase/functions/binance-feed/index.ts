@@ -684,11 +684,11 @@ async function executeTrade(
   }
 
   const isLong = signal.side === "long";
-  // ATR-based stop loss — tighter stops to cut losses fast
+  // ATR-based stop loss — use the larger of configured SL or 1.5x ATR to avoid noise stops
   const atr = signal.indicators.atr;
   const atrPctOfPrice = atr > 0 ? (atr / currentPrice) * 100 : config.stopLossPct;
-  // Use configured SL, tightened by ATR but never wider than config
-  const effectiveStopPct = Math.min(config.stopLossPct, Math.max(atrPctOfPrice * 0.8, 0.5));
+  // Use configured SL, but never tighter than 1.5x ATR (prevents whipsaw stops on noisy 1m candles)
+  const effectiveStopPct = Math.max(config.stopLossPct, Math.min(atrPctOfPrice * 1.5, 5.0));
   // Take profit at 3x the stop distance — let winners run for bigger gains
   const effectiveTpPct = Math.max(config.takeProfitPct, effectiveStopPct * 3);
   const stopLoss = isLong ? currentPrice * (1 - effectiveStopPct / 100) : currentPrice * (1 + effectiveStopPct / 100);
@@ -856,7 +856,7 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
     let closeReason = "";
     let isPartialClose = false;
 
-    // Minimum hold: don't close trades opened less than 5 minutes ago (prevents churn)
+    // Minimum hold: don't close trades opened less than 15 minutes ago (prevents churn)
     const minutesOpen = hoursOpen * 60;
 
     // Time-based exit: close after 48 hours regardless
@@ -864,12 +864,12 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
       shouldClose = true;
       closeReason = `Time exit (${hoursOpen.toFixed(0)}h open)`;
     }
-    // Trailing / breakeven stop — only check after 5 min minimum hold
-    else if (minutesOpen >= 2 && isLong && intrabarLow <= stop) {
+    // Trailing / breakeven stop — only check after 15 min minimum hold
+    else if (minutesOpen >= 15 && isLong && intrabarLow <= stop) {
       shouldClose = true;
       const exitPrice = Math.min(currentPrice, stop);
       closeReason = profitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
-    } else if (minutesOpen >= 2 && !isLong && intrabarHigh >= stop) {
+    } else if (minutesOpen >= 15 && !isLong && intrabarHigh >= stop) {
       shouldClose = true;
       const exitPrice = Math.max(currentPrice, stop);
       closeReason = profitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
