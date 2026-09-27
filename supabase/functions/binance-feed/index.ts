@@ -56,7 +56,7 @@ const TRADING_PAIRS = [
   "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
   "LTCUSDT", "BCHUSDT", "ATOMUSDT", "NEARUSDT", "APTUSDT",
   "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT", "SEIUSDT",
-  "TIAUSDT", "RUNEUSDT", "FILUSDT", "IMXUSDT", "MATICUSDT",
+  "TIAUSDT", "FILUSDT", "IMXUSDT", "MATICUSDT",
   "RNDRUSDT", "FTMUSDT", "SANDUSDT", "MANAUSDT", "AXSUSDT",
 ];
 
@@ -405,7 +405,21 @@ async function fetchCandles(symbol: string, interval: string = "1h", limit: numb
 async function fetchTickers(symbols: string[]): Promise<TickerData[]> {
   const symbolParam = symbols.map((s) => `"${s}"`).join(",");
   const res = await fetch(`${BINANCE_BASE}/api/v3/ticker/24hr?symbols=[${encodeURIComponent(symbolParam)}]`);
-  if (!res.ok) throw new Error(`Binance ticker error ${res.status}`);
+  if (!res.ok) {
+    const results: TickerData[] = [];
+    await Promise.all(symbols.map(async (sym) => {
+      try {
+        const r = await fetch(`${BINANCE_BASE}/api/v3/ticker/24hr?symbol=${sym}`);
+        if (!r.ok) return;
+        const d = await r.json() as Record<string, string>;
+        results.push({
+          symbol: d.symbol, price: parseFloat(d.lastPrice), priceChangePercent: parseFloat(d.priceChangePercent),
+          volume: parseFloat(d.volume), high: parseFloat(d.highPrice), low: parseFloat(d.lowPrice),
+        });
+      } catch { /* skip invalid symbol */ }
+    }));
+    return results;
+  }
   const data = await res.json();
   return (data as Array<Record<string, string>>).map((d) => ({
     symbol: d.symbol, price: parseFloat(d.lastPrice), priceChangePercent: parseFloat(d.priceChangePercent),
@@ -637,9 +651,27 @@ async function executeTrade(
   } else {
     balance = Number(faction.paper_balance);
   }
-  if (balance < 0.2) return { tradeId: null, reasoning: `Insufficient balance: ${balance.toFixed(2)}`, error: null };
+  if (balance < 5) return { tradeId: null, reasoning: `Insufficient balance: ${balance.toFixed(2)}`, error: null };
 
-  const positionValue = Math.min(balance * (config.maxPositionPct / 100), balance * 0.8);
+  // For live trades: subtract value of already-open positions from available balance
+  let availableBalance = balance;
+  if (isLive) {
+    const { data: openTrades } = await supabase
+      .from("paper_trades")
+      .select("position_value, remaining_quantity, quantity")
+      .eq("status", "open")
+      .eq("is_live", true);
+    if (openTrades) {
+      const deployed = openTrades.reduce((sum, t) => {
+        const remaining = Number(t.remaining_quantity ?? t.quantity) / Number(t.quantity);
+        return sum + Number(t.position_value) * remaining;
+      }, 0);
+      availableBalance = Math.max(0, balance - deployed);
+    }
+  }
+  if (availableBalance < 5) return { tradeId: null, reasoning: `Insufficient available balance: ${availableBalance.toFixed(2)}`, error: null };
+
+  const positionValue = Math.min(availableBalance * (config.maxPositionPct / 100), availableBalance * 0.8);
   let quantity = positionValue / currentPrice;
 
   // For live trades: round to valid LOT_SIZE step
@@ -1196,32 +1228,50 @@ Deno.serve(async (req: Request) => {
             continue;
           }
 
-          const { data: existing } = await supabase
-            .from("paper_trades")
-            .select("id")
-            .eq("faction_id", factionId)
-            .eq("symbol", symbol)
-            .eq("status", "open")
-            .limit(1);
-
-          if (existing && existing.length > 0) {
-            signals.push({
-              symbol, faction: factionId, strategy: signal.strategy, side: signal.side,
-              reasoning: signal.reasoning, price: currentPrice, strength: signal.strength,
-              tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
-            });
-            continue;
+          // Global duplicate check: no more than 1 open trade per symbol (live mode)
+          if (!config.paperMode) {
+            const { data: existing } = await supabase
+              .from("paper_trades")
+              .select("id")
+              .eq("symbol", symbol)
+              .eq("status", "open")
+              .eq("is_live", true)
+              .limit(1);
+            if (existing && existing.length > 0) {
+              signals.push({
+                symbol, faction: factionId, strategy: signal.strategy, side: signal.side,
+                reasoning: signal.reasoning + " [skipped: already open]", price: currentPrice, strength: signal.strength,
+                tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
+              });
+              continue;
+            }
+          } else {
+            const { data: existing } = await supabase
+              .from("paper_trades")
+              .select("id")
+              .eq("faction_id", factionId)
+              .eq("symbol", symbol)
+              .eq("status", "open")
+              .limit(1);
+            if (existing && existing.length > 0) {
+              signals.push({
+                symbol, faction: factionId, strategy: signal.strategy, side: signal.side,
+                reasoning: signal.reasoning, price: currentPrice, strength: signal.strength,
+                tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
+              });
+              continue;
+            }
           }
 
-          // In live mode: allow up to 8 concurrent trades for diversification
+          // In live mode: allow up to 3 concurrent trades to avoid over-extending capital
           if (!config.paperMode) {
             const { data: liveOpen } = await supabase
               .from("paper_trades")
               .select("id")
               .eq("status", "open")
               .eq("is_live", true)
-              .limit(8);
-            if (liveOpen && liveOpen.length >= 8) {
+              .limit(3);
+            if (liveOpen && liveOpen.length >= 3) {
               signals.push({
                 symbol, faction: factionId, strategy: signal.strategy, side: signal.side,
                 reasoning: signal.reasoning, price: currentPrice, strength: signal.strength,
