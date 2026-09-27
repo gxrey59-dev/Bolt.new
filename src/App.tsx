@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network } from 'lucide-react';
+import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { runStrategyScan, updateFactionStats } from '@/lib/engine';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
@@ -19,6 +19,7 @@ import BacktestPanel from '@/components/BacktestPanel';
 import LiveTradingDashboard from '@/components/LiveTradingDashboard';
 import NFTCollection from '@/components/NFTCollection';
 import DeFiSwarmPanel from '@/components/DeFiSwarmPanel';
+import RevenueCommandCenter from '@/components/RevenueCommandCenter';
 
 const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'live', label: 'Live Terminal', icon: Radio },
@@ -28,6 +29,7 @@ const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'operations', label: 'Operations', icon: Settings },
   { id: 'nft', label: 'NFT Armory', icon: Gem },
   { id: 'swarm', label: 'DeFi Swarms', icon: Network },
+  { id: 'revenue', label: 'Revenue', icon: Crown },
 ];
 
 export default function App() {
@@ -157,6 +159,10 @@ export default function App() {
 
           {tab === 'swarm' && (
             <DeFiSwarmPanel />
+          )}
+
+          {tab === 'revenue' && (
+            <RevenueCommandCenter />
           )}
         </div>
       </main>

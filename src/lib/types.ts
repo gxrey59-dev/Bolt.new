@@ -206,4 +206,4 @@ export interface StrategyConfig {
   updated_at: string;
 }
 
-export type TabId = 'command' | 'dashboard' | 'table' | 'operations' | 'live' | 'nft' | 'swarm';
+export type TabId = 'command' | 'dashboard' | 'table' | 'operations' | 'live' | 'nft' | 'swarm' | 'revenue';
