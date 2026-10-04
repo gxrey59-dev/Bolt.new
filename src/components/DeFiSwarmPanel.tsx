@@ -127,13 +127,15 @@ export default function DeFiSwarmPanel() {
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <Network className="h-5 w-5 text-cyan-400" />
-          <h2 className="text-lg font-bold text-zinc-100">DeFi Swarm Intelligence</h2>
+          <h2 className="text-lg font-bold text-zinc-100">DeFi Swarm Demo</h2>
         </div>
         <span className="flex items-center gap-1.5 rounded-full bg-cyan-500/15 px-3 py-1 text-[11px] font-bold text-cyan-400">
           <Bot className="h-3 w-3" />
-          {activeAgents} / {totalAgents} AGENTS LIVE
+          {activeAgents} / {totalAgents} DEMO AGENTS
         </span>
       </div>
+
+      <p role="note" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">Demo data only. Balances, yields, APY and agent activity are seeded examples, not real funds or earnings. No wallet or DeFi execution worker is connected.</p>
 
       {/* Overview Stats */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
