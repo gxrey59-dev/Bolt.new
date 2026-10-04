@@ -1,3 +1,4 @@
+import { Percent } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
 import {
   Network, Activity, Layers, Zap, TrendingUp, TrendingDown,
