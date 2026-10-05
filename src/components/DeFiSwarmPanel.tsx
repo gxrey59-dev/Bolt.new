@@ -1,398 +1,158 @@
-import { Percent } from 'lucide-react';
-import { useState, useEffect, useCallback } from 'react';
-import {
-  Network, Activity, Layers, Zap, TrendingUp, TrendingDown,
-  Boxes, Cpu, AlertTriangle, RefreshCw, ChevronDown, ChevronRight,
-  DollarSign, Gauge, Bot, Circle,
-} from 'lucide-react';
-import { supabase } from '@/lib/supabase';
-import { FACTIONS } from '@/lib/constants';
+import { useEffect, useState } from 'react';
+import { Network, Bot, Boxes, DollarSign, Percent, Activity, ChevronRight, ChevronDown, RefreshCw, Wallet, Square, Play } from 'lucide-react';
 
-interface Swarm {
-  id: string;
-  name: string;
-  faction_id: string;
-  protocol: string;
-  chain: string;
-  agent_count: number;
-  active_agents: number;
-  total_tvl: number;
-  total_yield_24h: number;
-  total_yield_7d: number;
-  apy: number;
-  strategies: string[];
-  status: string;
-  risk_level: string;
-  gas_efficiency: number;
-  rebalance_count: number;
-  last_rebalance_at: string | null;
+// Aave's canonical Polygon addresses provider. Resolve its current pool and oracle
+// at the same block as each account snapshot; never consume seeded DB earnings.
+const PROVIDER = '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb';
+const RPC = 'https://polygon-bor-rpc.publicnode.com';
+const addressPattern = /^0x[0-9a-fA-F]{40}$/;
+type Rpc = (method: string, params: unknown[], signal: AbortSignal) => Promise<unknown>;
+type Snapshot = { block: string; blockTime: number; checkedAt: string; pool: string; wallet: string | null; nativeBalance: string | null; collateral: string | null; debt: string | null; health: string | null; currency: string };
+type WalletProvider = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> };
+const cards = [
+  { name: 'Supreme Clientele Pool', icon: '🌊', chain: 'Ethereum', faction: 'Tony Starks', protocol: 'Curve' },
+  { name: 'Liquid Swords Swarm', icon: '🦄', chain: 'Arbitrum', faction: 'The Genius', protocol: 'Uniswap V3' },
+  { name: 'Cuban Linx Yield Cooperative', icon: '👻', chain: 'Polygon', faction: 'The Chef', protocol: 'Aave V3' },
+  { name: 'Golden Arms Bridge Swarm', icon: '⚖️', chain: 'Optimism', faction: 'U-God', protocol: 'Balancer' },
+  { name: 'Tical Flash Swarm', icon: '📊', chain: 'Base', faction: 'Meth Lab', protocol: 'Compound V3' },
+];
+function quantity(value: unknown): bigint {
+  if (typeof value !== 'string' || !/^0x[0-9a-f]+$/i.test(value)) throw new Error('Invalid hexadecimal RPC response.');
+  return BigInt(value);
 }
-
-interface SwarmAgent {
-  id: string;
-  swarm_id: string;
-  name: string;
-  role: string;
-  protocol: string;
-  pool_address: string;
-  capital_allocated: number;
-  current_value: number;
-  yield_24h: number;
-  apy: number;
-  status: string;
-  last_action: string;
-  last_action_at: string | null;
-  action_count: number;
+function decimal(value: bigint, scale: bigint, places = 6): string {
+  if (scale <= 0n) throw new Error('Invalid oracle unit.');
+  const fraction = ((value % scale) * 10n ** BigInt(places) / scale).toString().padStart(places, '0').replace(/0+$/, '');
+  return (value / scale).toString() + (fraction ? '.' + fraction : '');
 }
-
-const PROTOCOL_ICONS: Record<string, string> = {
-  uniswap_v3: '🦄', aave_v3: '👻', compound_v3: '📊', curve: '🌊', balancer: '⚖️',
-};
-
-const CHAIN_COLORS: Record<string, string> = {
-  ethereum: '#627eea', arbitrum: '#28a0f0', polygon: '#8247e5', base: '#0052ff', optimism: '#ff0420',
-};
-
-const RISK_STYLES: Record<string, { text: string; bg: string }> = {
-  low: { text: 'text-emerald-400', bg: 'bg-emerald-500/15' },
-  medium: { text: 'text-amber-400', bg: 'bg-amber-500/15' },
-  high: { text: 'text-orange-400', bg: 'bg-orange-500/15' },
-  extreme: { text: 'text-red-400', bg: 'bg-red-500/15' },
-};
-
-const STATUS_STYLES: Record<string, { text: string; dot: string }> = {
-  active: { text: 'text-emerald-400', dot: 'bg-emerald-500' },
-  idle: { text: 'text-zinc-500', dot: 'bg-zinc-600' },
-  rebalancing: { text: 'text-amber-400', dot: 'bg-amber-500' },
-  migrating: { text: 'text-blue-400', dot: 'bg-blue-500' },
-  error: { text: 'text-red-400', dot: 'bg-red-500' },
-  paused: { text: 'text-zinc-500', dot: 'bg-zinc-600' },
-};
-
-const ROLE_ICONS: Record<string, typeof Bot> = {
-  liquidity_provider: Layers,
-  yield_farmer: TrendingUp,
-  arbitrageur: Zap,
-  hedger: Shield,
-  sentinel: Activity,
-  harvester: DollarSign,
-};
-
-import { Shield } from 'lucide-react';
-
-function timeAgo(dateStr: string | null): string {
-  if (!dateStr) return '—';
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.floor(hr / 24)}d ago`;
+function decodeAddress(value: unknown): string {
+  if (typeof value !== 'string' || !/^0x0{24}[0-9a-f]{40}$/i.test(value)) throw new Error('Invalid contract address response.');
+  const address = '0x' + value.slice(-40);
+  if (/^0x0{40}$/.test(address)) throw new Error('Contract address is not configured.');
+  return address;
+}
+async function rpc(method: string, params: unknown[], signal: AbortSignal): Promise<unknown> {
+  const response = await fetch(RPC, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal });
+  if (!response.ok) throw new Error(`Polygon RPC returned HTTP ${response.status}.`);
+  const body = await response.json();
+  if (body.error) throw new Error(body.error.message || 'Polygon RPC rejected the request.');
+  if (body.id !== 1 || !('result' in body)) throw new Error('Invalid RPC response.');
+  return body.result;
+}
+async function readSnapshot(request: Rpc, wallet: string, signal: AbortSignal): Promise<Snapshot> {
+  if (wallet && (!addressPattern.test(wallet) || /^0x0{40}$/i.test(wallet))) throw new Error('Enter a valid, nonzero public wallet address.');
+  if (quantity(await request('eth_chainId', [], signal)) !== 137n) throw new Error('Wrong network: Polygon mainnet is required.');
+  const block = await request('eth_blockNumber', [], signal);
+  quantity(block);
+  const blockInfo = await request('eth_getBlockByNumber', [block, false], signal) as { timestamp?: unknown; number?: unknown } | null;
+  if (!blockInfo || blockInfo.number !== block) throw new Error('Block data is incomplete.');
+  const blockTime = Number(quantity(blockInfo.timestamp)) * 1000;
+  if (Date.now() - blockTime > 180000 || blockTime - Date.now() > 30000) throw new Error('RPC block is stale or has an invalid timestamp.');
+  const call = (to: string, data: string) => request('eth_call', [{ to, data }, block], signal);
+  const pool = decodeAddress(await call(PROVIDER, '0x026b1d5f'));
+  const code = await request('eth_getCode', [pool, block], signal);
+  if (typeof code !== 'string' || !/^0x[0-9a-f]+$/i.test(code) || code === '0x0') throw new Error('Aave pool bytecode was not found.');
+  const result: Snapshot = { block: quantity(block).toString(), blockTime, checkedAt: new Date().toISOString(), pool, wallet: wallet || null, nativeBalance: null, collateral: null, debt: null, health: null, currency: '' };
+  if (!wallet) return result;
+  const oracle = decodeAddress(await call(PROVIDER, '0xfca513a8'));
+  const [account, balance, unit, base] = await Promise.all([
+    call(pool, '0xbf92857c' + wallet.slice(2).padStart(64, '0')),
+    request('eth_getBalance', [wallet, block], signal),
+    call(oracle, '0x8c89b64f'), call(oracle, '0xe19f4700'),
+  ]);
+  if (typeof account !== 'string' || !/^0x[0-9a-f]{384}$/i.test(account)) throw new Error('Aave returned an invalid account snapshot.');
+  const values = Array.from({ length: 6 }, (_, i) => BigInt('0x' + account.slice(2 + i * 64, 66 + i * 64)));
+  if (typeof base !== 'string' || !/^0x[0-9a-f]{64}$/i.test(base)) throw new Error('Invalid oracle base currency.');
+  result.currency = quantity(base) === 0n ? 'USD' : decodeAddress(base);
+  result.nativeBalance = decimal(quantity(balance), 10n ** 18n);
+  result.collateral = decimal(values[0], quantity(unit), 2);
+  result.debt = decimal(values[1], quantity(unit), 2);
+  result.health = values[1] === 0n ? 'No debt' : decimal(values[5], 10n ** 18n, 4);
+  return result;
 }
 
 export default function DeFiSwarmPanel() {
-  const [swarms, setSwarms] = useState<Swarm[]>([]);
-  const [agents, setAgents] = useState<Record<string, SwarmAgent[]>>({});
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const fetchData = useCallback(async () => {
-    const [swRes, agRes] = await Promise.all([
-      supabase.from('defi_swarms').select('*').order('total_tvl', { ascending: false }),
-      supabase.from('defi_swarm_agents').select('*').order('apy', { ascending: false }),
-    ]);
-    setSwarms((swRes.data ?? []) as Swarm[]);
-    const agentMap: Record<string, SwarmAgent[]> = {};
-    for (const a of (agRes.data ?? []) as SwarmAgent[]) {
-      if (!agentMap[a.swarm_id]) agentMap[a.swarm_id] = [];
-      agentMap[a.swarm_id].push(a);
+  const [wallet, setWallet] = useState('');
+  const [running, setRunning] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [expanded, setExpanded] = useState<string | null>('Aave V3');
+  useEffect(() => {
+    if (!running) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let controller: AbortController;
+    async function poll() {
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+      setLoading(true);
+      try {
+        const next = await readSnapshot(rpc, wallet.trim(), controller.signal);
+        if (!disposed) { setSnapshot(next); setError(''); }
+      } catch (cause) {
+        if (!disposed) {
+          setSnapshot(null);
+          setError(cause instanceof Error && cause.name !== 'AbortError' ? cause.message : 'Live checks timed out. Retry when the network is available.');
+        }
+      } finally {
+        clearTimeout(timeout);
+        if (!disposed) { setLoading(false); timer = setTimeout(() => void poll(), 30000); }
+      }
     }
-    setAgents(agentMap);
-    setLoading(false);
-  }, []);
-
-  useEffect(() => { fetchData(); const id = setInterval(fetchData, 5000); return () => clearInterval(id); }, [fetchData]);
-
-  const totalTVL = swarms.reduce((s, w) => s + Number(w.total_tvl), 0);
-  const totalYield24h = swarms.reduce((s, w) => s + Number(w.total_yield_24h), 0);
-  const totalYield7d = swarms.reduce((s, w) => s + Number(w.total_yield_7d), 0);
-  const totalAgents = swarms.reduce((s, w) => s + w.agent_count, 0);
-  const activeAgents = swarms.reduce((s, w) => s + w.active_agents, 0);
-  const blendedAPY = totalTVL > 0 ? swarms.reduce((s, w) => s + Number(w.apy) * Number(w.total_tvl), 0) / totalTVL : 0;
-
-  return (
-    <section className="space-y-5">
-      {/* Header */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-2">
-          <Network className="h-5 w-5 text-cyan-400" />
-          <h2 className="text-lg font-bold text-zinc-100">DeFi Swarm Demo</h2>
-        </div>
-        <span className="flex items-center gap-1.5 rounded-full bg-cyan-500/15 px-3 py-1 text-[11px] font-bold text-cyan-400">
-          <Bot className="h-3 w-3" />
-          {activeAgents} / {totalAgents} DEMO AGENTS
-        </span>
+    void poll();
+    return () => { disposed = true; clearTimeout(timer); controller?.abort(); };
+  }, [running, wallet, refresh]);
+  function stop() { setRunning(false); setSnapshot(null); setLoading(false); setError(''); }
+  async function connectWallet() {
+    try {
+      const provider = (window as Window & { ethereum?: WalletProvider }).ethereum;
+      if (!provider) throw new Error('No browser wallet is available here. Open the preview in your wallet browser, or enter your public address below.');
+      const accounts = await provider.request({ method: 'eth_requestAccounts' });
+      if (!Array.isArray(accounts) || typeof accounts[0] !== 'string' || !addressPattern.test(accounts[0])) throw new Error('The wallet did not provide an account.');
+      stop(); setWallet(accounts[0]);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Wallet connection was declined.'); }
+  }
+  const healthy = running && snapshot !== null && !error;
+  const stats = [
+    { label: 'Verified collateral', value: snapshot?.collateral ? `${snapshot.collateral} ${snapshot.currency}` : '—', icon: Boxes },
+    { label: 'Yield 24h', value: '—', icon: DollarSign },
+    { label: 'Yield 7d', value: '—', icon: DollarSign },
+    { label: 'Verified APY', value: '—', icon: Percent },
+    { label: 'Live monitors', value: healthy ? '1' : '—', icon: Bot },
+    { label: 'Confirmed rebalances', value: '—', icon: Activity },
+  ];
+  return <section className="space-y-5">
+    <div className="flex items-center gap-3 flex-wrap">
+      <Network className="h-5 w-5 text-cyan-400" /><h2 className="text-lg font-bold text-zinc-100">DeFi Swarm Intelligence</h2>
+      <span className="rounded-full bg-cyan-500/15 px-3 py-1 text-[11px] font-bold text-cyan-400">{healthy ? 'ON-CHAIN MONITORING' : running ? 'CONNECTING' : 'NOT RUNNING'}</span>
+    </div>
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-3">
+      <div className="flex flex-wrap gap-2">
+        <input aria-label="Public wallet address" value={wallet} onChange={event => { stop(); setWallet(event.target.value); }} placeholder="Public wallet address (0x…)" className="min-w-64 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-200" />
+        <button onClick={() => void connectWallet()} className="rounded-lg bg-zinc-800 px-3 py-2 text-sm text-zinc-200"><Wallet className="mr-2 inline h-4 w-4" />Connect wallet</button>
+        <button disabled={loading} onClick={() => { setSnapshot(null); setError(''); setRunning(true); setRefresh(value => value + 1); }} className="rounded-lg bg-cyan-600 px-3 py-2 text-sm text-white disabled:opacity-50">{loading ? <RefreshCw className="mr-2 inline h-4 w-4 animate-spin" /> : <Play className="mr-2 inline h-4 w-4" />}Run live checks</button>
+        {running && <button onClick={stop} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300"><Square className="mr-2 inline h-4 w-4" />Stop checks</button>}
       </div>
-
-      <p role="note" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">Demo data only. Balances, yields, APY and agent activity are seeded examples, not real funds or earnings. No wallet or DeFi execution worker is connected.</p>
-
-      {/* Overview Stats */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <div className="rounded-xl border border-zinc-800 bg-gradient-to-br from-zinc-900/80 to-zinc-950/80 p-4">
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <Boxes className="h-3.5 w-3.5 text-cyan-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Total TVL</p>
-          </div>
-          <p className="font-mono text-xl font-bold tabular-nums text-zinc-100">
-            ${totalTVL.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-          </p>
-        </div>
-        <div className="rounded-xl border border-zinc-800 bg-gradient-to-br from-zinc-900/80 to-zinc-950/80 p-4">
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <TrendingUp className="h-3.5 w-3.5 text-emerald-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Yield 24h</p>
-          </div>
-          <p className="font-mono text-xl font-bold tabular-nums text-emerald-400">
-            +${totalYield24h.toFixed(2)}
-          </p>
-        </div>
-        <div className="rounded-xl border border-zinc-800 bg-gradient-to-br from-zinc-900/80 to-zinc-950/80 p-4">
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <TrendingUp className="h-3.5 w-3.5 text-emerald-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Yield 7d</p>
-          </div>
-          <p className="font-mono text-xl font-bold tabular-nums text-emerald-400">
-            +${totalYield7d.toFixed(2)}
-          </p>
-        </div>
-        <div className="rounded-xl border border-zinc-800 bg-gradient-to-br from-zinc-900/80 to-zinc-950/80 p-4">
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <Percent className="h-3.5 w-3.5 text-amber-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Blended APY</p>
-          </div>
-          <p className="font-mono text-xl font-bold tabular-nums text-amber-400">
-            {blendedAPY.toFixed(1)}%
-          </p>
-        </div>
-        <div className="rounded-xl border border-zinc-800 bg-gradient-to-br from-zinc-900/80 to-zinc-950/80 p-4">
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <Cpu className="h-3.5 w-3.5 text-blue-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Swarms</p>
-          </div>
-          <p className="font-mono text-xl font-bold tabular-nums text-zinc-100">{swarms.length}</p>
-        </div>
-        <div className="rounded-xl border border-zinc-800 bg-gradient-to-br from-zinc-900/80 to-zinc-950/80 p-4">
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <Gauge className="h-3.5 w-3.5 text-purple-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Rebalances</p>
-          </div>
-          <p className="font-mono text-xl font-bold tabular-nums text-zinc-100">
-            {swarms.reduce((s, w) => s + w.rebalance_count, 0)}
-          </p>
-        </div>
-      </div>
-
-      {/* Swarm Cards */}
-      {loading ? (
-        <div className="flex h-64 items-center justify-center">
-          <RefreshCw className="h-6 w-6 animate-spin text-zinc-600" />
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {swarms.map(swarm => {
-            const factionMeta = FACTIONS.find(f => f.id === swarm.faction_id);
-            const chainColor = CHAIN_COLORS[swarm.chain] ?? '#a1a1aa';
-            const riskStyle = RISK_STYLES[swarm.risk_level] ?? RISK_STYLES.medium;
-            const statusStyle = STATUS_STYLES[swarm.status] ?? STATUS_STYLES.active;
-            const swarmAgents = agents[swarm.id] ?? [];
-            const isExpanded = expanded === swarm.id;
-            const activeCount = swarmAgents.filter(a => a.status === 'active').length;
-            const errorCount = swarmAgents.filter(a => a.status === 'error').length;
-            const agentTVL = swarmAgents.reduce((s, a) => s + Number(a.current_value), 0);
-
-            return (
-              <div
-                key={swarm.id}
-                className={`rounded-2xl border bg-gradient-to-br from-zinc-900/90 to-zinc-950/90 transition-all ${
-                  isExpanded ? 'border-cyan-500/40' : 'border-zinc-800'
-                }`}
-              >
-                {/* Swarm header row */}
-                <div
-                  className="flex items-center gap-3 p-4 cursor-pointer hover:bg-zinc-800/30 transition-colors"
-                  onClick={() => setExpanded(isExpanded ? null : swarm.id)}
-                >
-                  {/* Expand icon */}
-                  {isExpanded
-                    ? <ChevronDown className="h-4 w-4 flex-shrink-0 text-zinc-500" />
-                    : <ChevronRight className="h-4 w-4 flex-shrink-0 text-zinc-500" />
-                  }
-
-                  {/* Protocol icon */}
-                  <span className="text-2xl flex-shrink-0">{PROTOCOL_ICONS[swarm.protocol] ?? '🔧'}</span>
-
-                  {/* Name + chain */}
-                  <div className="flex-shrink-0 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-bold text-zinc-100 truncate">{swarm.name}</h3>
-                      <span className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-bold ${statusStyle.text} ${statusStyle.dot === 'bg-emerald-500' ? 'bg-emerald-500/10' : 'bg-zinc-800'}`}>
-                        <Circle className="h-1.5 w-1.5 fill-current" />
-                        {swarm.status.toUpperCase()}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="flex items-center gap-1 text-[10px] text-zinc-500">
-                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: chainColor }} />
-                        {swarm.chain}
-                      </span>
-                      <span className="text-[10px] text-zinc-600">·</span>
-                      <span className="text-[10px] text-zinc-500">{factionMeta?.name ?? swarm.faction_id}</span>
-                      <span className="text-[10px] text-zinc-600">·</span>
-                      <span className={`text-[10px] font-bold ${riskStyle.text}`}>{swarm.risk_level.toUpperCase()} RISK</span>
-                    </div>
-                  </div>
-
-                  {/* Stats */}
-                  <div className="ml-auto flex items-center gap-4 sm:gap-6">
-                    <div className="text-right">
-                      <p className="text-[9px] uppercase tracking-wider text-zinc-600">TVL</p>
-                      <p className="font-mono text-sm font-bold tabular-nums text-zinc-100">
-                        ${Number(swarm.total_tvl).toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                      </p>
-                    </div>
-                    <div className="text-right hidden sm:block">
-                      <p className="text-[9px] uppercase tracking-wider text-zinc-600">24h Yield</p>
-                      <p className="font-mono text-sm font-bold tabular-nums text-emerald-400">
-                        +${Number(swarm.total_yield_24h).toFixed(2)}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[9px] uppercase tracking-wider text-zinc-600">APY</p>
-                      <p className="font-mono text-sm font-bold tabular-nums text-amber-400">
-                        {Number(swarm.apy).toFixed(1)}%
-                      </p>
-                    </div>
-                    <div className="text-right hidden md:block">
-                      <p className="text-[9px] uppercase tracking-wider text-zinc-600">Agents</p>
-                      <p className="font-mono text-sm font-bold tabular-nums text-zinc-300">
-                        {activeCount}/{swarm.agent_count}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Expanded agent list */}
-                {isExpanded && (
-                  <div className="border-t border-zinc-800/60 p-4 space-y-2 animate-fade-in">
-                    {/* Strategies tags */}
-                    <div className="flex flex-wrap gap-1.5 mb-3">
-                      {swarm.strategies.map(s => (
-                        <span key={s} className="rounded-md bg-zinc-800/60 px-2 py-0.5 text-[9px] font-semibold text-zinc-400">
-                          {s.replace(/_/g, ' ')}
-                        </span>
-                      ))}
-                      <span className="flex items-center gap-1 rounded-md bg-zinc-800/60 px-2 py-0.5 text-[9px] font-semibold text-zinc-500">
-                        <Gauge className="h-2.5 w-2.5" />
-                        gas eff {(Number(swarm.gas_efficiency) * 100).toFixed(0)}%
-                      </span>
-                      <span className="flex items-center gap-1 rounded-md bg-zinc-800/60 px-2 py-0.5 text-[9px] font-semibold text-zinc-500">
-                        <RefreshCw className="h-2.5 w-2.5" />
-                        {swarm.rebalance_count} rebalances
-                      </span>
-                    </div>
-
-                    {/* Error banner */}
-                    {errorCount > 0 && (
-                      <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-2 mb-2">
-                        <AlertTriangle className="h-3.5 w-3.5 text-red-400 flex-shrink-0" />
-                        <p className="text-[11px] text-red-400">{errorCount} agent{errorCount > 1 ? 's' : ''} in error state — requires attention</p>
-                      </div>
-                    )}
-
-                    {/* Agent rows */}
-                    {swarmAgents.length === 0 ? (
-                      <p className="text-center text-xs text-zinc-600 py-4">No agents deployed</p>
-                    ) : (
-                      swarmAgents.map(agent => {
-                        const RoleIcon = ROLE_ICONS[agent.role] ?? Bot;
-                        const agStatus = STATUS_STYLES[agent.status] ?? STATUS_STYLES.active;
-                        const pnl = Number(agent.current_value) - Number(agent.capital_allocated);
-                        const pnlPositive = pnl >= 0;
-
-                        return (
-                          <div
-                            key={agent.id}
-                            className="flex items-center gap-3 rounded-xl bg-zinc-950/60 p-3 hover:bg-zinc-900/60 transition-colors"
-                          >
-                            {/* Role icon */}
-                            <div className="flex-shrink-0 rounded-lg bg-zinc-800/80 p-2">
-                              <RoleIcon className="h-3.5 w-3.5 text-zinc-400" />
-                            </div>
-
-                            {/* Name + role */}
-                            <div className="flex-shrink-0 min-w-0 w-28">
-                              <p className="text-xs font-bold text-zinc-200 truncate">{agent.name}</p>
-                              <p className="text-[9px] text-zinc-600 capitalize">{agent.role.replace(/_/g, ' ')}</p>
-                            </div>
-
-                            {/* Status dot */}
-                            <div className="flex-shrink-0 flex items-center gap-1">
-                              <span className={`h-2 w-2 rounded-full ${agStatus.dot} ${agent.status === 'active' ? 'animate-pulse' : ''}`} />
-                              <span className={`text-[9px] font-semibold ${agStatus.text}`}>{agent.status}</span>
-                            </div>
-
-                            {/* Pool address */}
-                            <div className="hidden lg:block flex-shrink-0 min-w-0 w-32">
-                              <p className="font-mono text-[10px] text-zinc-600 truncate">{agent.pool_address}</p>
-                            </div>
-
-                            {/* Capital */}
-                            <div className="hidden sm:block text-right flex-shrink-0 w-20">
-                              <p className="text-[9px] text-zinc-600">Capital</p>
-                              <p className="font-mono text-[11px] font-semibold tabular-nums text-zinc-300">
-                                ${Number(agent.capital_allocated).toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                              </p>
-                            </div>
-
-                            {/* P&L */}
-                            <div className="hidden sm:block text-right flex-shrink-0 w-20">
-                              <p className="text-[9px] text-zinc-600">P&L</p>
-                              <p className={`font-mono text-[11px] font-bold tabular-nums ${pnlPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-                                {pnlPositive ? '+' : ''}${pnl.toFixed(2)}
-                              </p>
-                            </div>
-
-                            {/* APY */}
-                            <div className="text-right flex-shrink-0 w-16">
-                              <p className="text-[9px] text-zinc-600">APY</p>
-                              <p className="font-mono text-[11px] font-bold tabular-nums text-amber-400">
-                                {Number(agent.apy).toFixed(1)}%
-                              </p>
-                            </div>
-
-                            {/* Last action */}
-                            <div className="hidden xl:block flex-1 min-w-0 ml-2">
-                              <p className="text-[10px] text-zinc-500 truncate">{agent.last_action}</p>
-                              <p className="text-[9px] text-zinc-600">{timeAgo(agent.last_action_at)} · {agent.action_count} actions</p>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-
-                    {/* Swarm footer */}
-                    <div className="flex items-center justify-between pt-2 text-[10px] text-zinc-600">
-                      <span>Agent TVL: ${agentTVL.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
-                      <span>Last rebalance: {timeAgo(swarm.last_rebalance_at)}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
+      <p className="text-xs text-zinc-500">Polygon mainnet · Aave V3 · reads every 30 seconds while this panel is open. A public address enables position checks. No private key is requested.</p>
+      <p className="text-xs text-zinc-400">These checks monitor the chain and positions. Funded strategy execution and yield accounting are not connected.</p>
+      {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
+      {snapshot && <p role="status" className="text-xs text-cyan-400">Verified block {snapshot.block} · checked {snapshot.checkedAt}{snapshot.wallet ? ` · wallet ${snapshot.wallet}` : ' · connect a wallet for positions'}</p>}
+    </div>
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">{stats.map(stat => <div key={stat.label} className="rounded-xl border border-zinc-800 bg-gradient-to-br from-zinc-900/80 to-zinc-950/80 p-4"><div className="mb-1.5 flex items-center gap-1.5"><stat.icon className="h-3.5 w-3.5 text-cyan-400" /><p className="text-[10px] uppercase tracking-wider text-zinc-500">{stat.label}</p></div><p className="font-mono text-xl font-bold text-zinc-100 break-all">{stat.value}</p></div>)}</div>
+    <div className="space-y-3">{cards.map(card => {
+      const aave = card.protocol === 'Aave V3';
+      const open = expanded === card.protocol;
+      return <div key={card.protocol} className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/60">
+        <button aria-expanded={open} onClick={() => setExpanded(open ? null : card.protocol)} className="flex w-full items-center gap-4 p-5 text-left">
+          {open ? <ChevronDown className="h-4 w-4 text-zinc-500" /> : <ChevronRight className="h-4 w-4 text-zinc-500" />}<span className="text-2xl">{card.icon}</span>
+          <div className="flex-1"><h3 className="text-sm font-bold text-zinc-200">{card.name}</h3><p className="text-[10px] text-zinc-500">{card.chain} · {card.faction} · {card.protocol}</p></div>
+          <span className="rounded-full bg-zinc-800 px-2 py-1 text-[10px] font-bold text-cyan-400">{aave ? healthy ? 'MONITORING' : error ? 'CONNECTION ERROR' : 'READY TO CHECK' : 'INTEGRATION REQUIRED'}</span>
+          <div className="hidden text-right sm:block"><p className="text-[9px] text-zinc-500">COLLATERAL</p><p className="font-mono text-sm text-zinc-200">{aave && snapshot?.collateral ? `${snapshot.collateral} ${snapshot.currency}` : '—'}</p></div>
+        </button>
+        {open && <div className="space-y-3 border-t border-zinc-800 p-5 text-xs text-zinc-400">{aave ? <><p>Monitor checks the Polygon chain ID, block freshness, current Aave pool bytecode, wallet balance and Aave position at the same block.</p><div className="grid grid-cols-3 gap-4"><div>Wallet POL<p className="mt-1 font-mono text-zinc-200">{snapshot?.nativeBalance ?? '—'}</p></div><div>Debt<p className="mt-1 font-mono text-zinc-200">{snapshot?.debt ? `${snapshot.debt} ${snapshot.currency}` : '—'}</p></div><div>Health factor<p className="mt-1 font-mono text-zinc-200">{snapshot?.health ?? '—'}</p></div></div>{snapshot && <p className="break-all">Pool: {snapshot.pool}</p>}</> : <p>This strategy requires a protocol adapter, wallet position discovery and confirmed transaction accounting before it can run. No activity or earnings are estimated.</p>}</div>}
+      </div>;
+    })}</div>
+  </section>;
 }
