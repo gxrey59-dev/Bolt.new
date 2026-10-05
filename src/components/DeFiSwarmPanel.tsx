@@ -42,10 +42,10 @@ async function rpc(method: string, params: unknown[], signal: AbortSignal): Prom
 async function readSnapshot(request: Rpc, wallet: string, signal: AbortSignal): Promise<Snapshot> {
   if (wallet && (!addressPattern.test(wallet) || /^0x0{40}$/i.test(wallet))) throw new Error('Enter a valid, nonzero public wallet address.');
   if (quantity(await request('eth_chainId', [], signal)) !== 137n) throw new Error('Wrong network: Polygon mainnet is required.');
-  const block = await request('eth_blockNumber', [], signal);
+  const blockInfo = await request('eth_getBlockByNumber', ['latest', false], signal) as { timestamp?: unknown; number?: unknown } | null;
+  if (!blockInfo) throw new Error('The RPC did not return a block header.');
+  const block = blockInfo.number;
   quantity(block);
-  const blockInfo = await request('eth_getBlockByNumber', [block, false], signal) as { timestamp?: unknown; number?: unknown } | null;
-  if (!blockInfo || blockInfo.number !== block) throw new Error('Block data is incomplete.');
   const blockTime = Number(quantity(blockInfo.timestamp)) * 1000;
   if (Date.now() - blockTime > 180000 || blockTime - Date.now() > 30000) throw new Error('RPC block is stale or has an invalid timestamp.');
   const call = (to: string, data: string) => request('eth_call', [{ to, data }, block], signal);
@@ -126,7 +126,7 @@ export default function DeFiSwarmPanel() {
   return <section className="space-y-5">
     <div className="flex items-center gap-3 flex-wrap">
       <Network className="h-5 w-5 text-cyan-400" /><h2 className="text-lg font-bold text-zinc-100">DeFi Swarm Intelligence</h2>
-      <span className="rounded-full bg-cyan-500/15 px-3 py-1 text-[11px] font-bold text-cyan-400">{healthy ? 'ON-CHAIN MONITORING' : running ? 'CONNECTING' : 'NOT RUNNING'}</span>
+      <span className="rounded-full bg-cyan-500/15 px-3 py-1 text-[11px] font-bold text-cyan-400">{healthy ? 'ON-CHAIN MONITORING' : error ? 'CONNECTION ERROR' : running ? 'CONNECTING' : 'NOT RUNNING'}</span>
     </div>
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-3">
       <div className="flex flex-wrap gap-2">
