@@ -32,8 +32,8 @@ const FACTION_COLORS: Record<string, string> = {
 
 export default function NFTCollection() {
   const [nfts, setNfts] = useState<NFTCard[]>([]);
-  const [minting, setMinting] = useState<string | null>(null);
-  const [mintedIds, setMintedIds] = useState<Set<string>>(new Set());
+  const minting: string | null = null;
+  const mintedIds = new Set<string>();
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<NFTCard | null>(null);
   const [copied, setCopied] = useState(false);
@@ -45,19 +45,6 @@ export default function NFTCollection() {
   }, []);
 
   useEffect(() => { fetchNFTs(); }, [fetchNFTs]);
-
-  async function handleMint(nft: NFTCard) {
-    setMinting(nft.id);
-    const newCount = nft.minted_count + 1;
-    const { error } = await supabase.from('nft_collection')
-      .update({ minted_count: newCount, minted_at: new Date().toISOString() })
-      .eq('id', nft.id);
-    if (!error) {
-      setMintedIds(prev => new Set(prev).add(nft.id));
-      setNfts(prev => prev.map(n => n.id === nft.id ? { ...n, minted_count: newCount } : n));
-    }
-    setTimeout(() => setMinting(null), 600);
-  }
 
   function handleShare() {
     const url = window.location.href;
@@ -85,9 +72,7 @@ export default function NFTCollection() {
     }
   }
 
-  const totalMinted = nfts.reduce((s, n) => s + n.minted_count, 0);
   const totalSupply = nfts.reduce((s, n) => s + n.total_supply, 0);
-  const totalRevenue = nfts.reduce((s, n) => s + n.mint_price * n.minted_count, 0);
   const mythicCount = nfts.filter(n => n.rarity === 'mythic').length;
   const legendaryCount = nfts.filter(n => n.rarity === 'legendary').length;
 
@@ -105,8 +90,7 @@ export default function NFTCollection() {
               <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">v1</span>
             </div>
             <p className="text-sm text-zinc-400 max-w-lg">
-              9 unique faction NFTs. Each card represents a trading strategy powered by live market data.
-              Mint to support the faction — rarer cards carry higher power and bigger upside.
+              Faction artwork and collection designs. A deployed mint contract and wallet connection are required before minting can be enabled.
             </p>
             <div className="mt-3 flex items-center gap-4 text-[11px]">
               <span className="flex items-center gap-1 text-amber-400">
@@ -135,11 +119,11 @@ export default function NFTCollection() {
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-center">
           <p className="text-[10px] uppercase tracking-wider text-zinc-600">Total Minted</p>
-          <p className="font-mono text-lg font-bold tabular-nums text-zinc-100">{totalMinted} / {totalSupply}</p>
+          <p className="font-mono text-lg font-bold tabular-nums text-zinc-100">— / {totalSupply} planned</p>
         </div>
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-center">
           <p className="text-[10px] uppercase tracking-wider text-zinc-600">Mint Revenue</p>
-          <p className="font-mono text-lg font-bold tabular-nums text-emerald-400">${totalRevenue.toFixed(2)}</p>
+          <p className="font-mono text-lg font-bold tabular-nums text-emerald-400">—</p>
         </div>
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-center">
           <p className="text-[10px] uppercase tracking-wider text-zinc-600">Unique Cards</p>
@@ -159,8 +143,8 @@ export default function NFTCollection() {
             const factionMeta = FACTIONS.find(f => f.id === nft.faction_id);
             const accentColor = FACTION_COLORS[factionMeta?.color ?? 'blue'];
             const isMinted = mintedIds.has(nft.id);
-            const soldOut = nft.minted_count >= nft.total_supply;
-            const mintProgress = (nft.minted_count / nft.total_supply) * 100;
+            const soldOut = false;
+            const mintProgress = 0;
 
             return (
               <div
@@ -214,8 +198,8 @@ export default function NFTCollection() {
                 {/* Mint progress */}
                 <div className="mb-3">
                   <div className="mb-1 flex items-center justify-between text-[9px] text-zinc-600">
-                    <span>{nft.minted_count} / {nft.total_supply} minted</span>
-                    <span>{mintProgress.toFixed(0)}%</span>
+                    <span>On-chain supply unavailable</span>
+                    <span>—</span>
                   </div>
                   <div className="h-1.5 w-full rounded-full bg-zinc-800">
                     <div
@@ -228,26 +212,11 @@ export default function NFTCollection() {
                 {/* Actions */}
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => handleMint(nft)}
-                    disabled={minting === nft.id || soldOut}
-                    className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-bold transition-all ${
-                      soldOut
-                        ? 'cursor-not-allowed bg-zinc-800 text-zinc-600'
-                        : isMinted
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : 'bg-zinc-800 text-zinc-100 hover:bg-zinc-700'
-                    }`}
-                  >
-                    {minting === nft.id ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : isMinted ? (
-                      <><Check className="h-3.5 w-3.5" /> Minted!</>
-                    ) : soldOut ? (
-                      'Sold Out'
-                    ) : (
-                      <><Flame className="h-3.5 w-3.5" /> Mint ${nft.mint_price}</>
-                    )}
-                  </button>
+                    disabled title="Deploy a mint contract and connect a wallet first"
+                    className="flex flex-1 cursor-not-allowed items-center justify-center gap-1.5 rounded-xl bg-zinc-800 py-3 text-sm font-bold text-zinc-500"
+                >
+                  <Flame className="h-4 w-4" /> Contract not connected
+                </button>
                   <button
                     onClick={() => handleShareCard(nft)}
                     className="flex items-center justify-center rounded-xl bg-zinc-800 px-3 py-2.5 text-zinc-400 transition-all hover:bg-zinc-700 hover:text-zinc-200"
@@ -331,13 +300,13 @@ export default function NFTCollection() {
               {/* Supply */}
               <div className="mb-4">
                 <div className="mb-1 flex items-center justify-between text-[10px] text-zinc-600">
-                  <span>Supply: {selected.minted_count} / {selected.total_supply}</span>
-                  <span>{((selected.minted_count / selected.total_supply) * 100).toFixed(0)}%</span>
+                  <span>On-chain supply unavailable</span>
+                  <span>—</span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-zinc-800">
                   <div
                     className="h-2 rounded-full transition-all"
-                    style={{ width: `${(selected.minted_count / selected.total_supply) * 100}%`, backgroundColor: accentColor }}
+                    style={{ width: '0%', backgroundColor: accentColor }}
                   />
                 </div>
               </div>
@@ -345,10 +314,9 @@ export default function NFTCollection() {
               {/* Actions */}
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => handleMint(selected)}
-                  disabled={minting === selected.id || selected.minted_count >= selected.total_supply}
+                  disabled title="Deploy a mint contract and connect a wallet first"
                   className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-bold transition-all ${
-                    selected.minted_count >= selected.total_supply
+                    false
                       ? 'cursor-not-allowed bg-zinc-800 text-zinc-600'
                       : minting === selected.id
                       ? 'bg-zinc-800 text-zinc-400'
@@ -357,10 +325,10 @@ export default function NFTCollection() {
                 >
                   {minting === selected.id ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : selected.minted_count >= selected.total_supply ? (
+                  ) : false ? (
                     'Sold Out'
                   ) : (
-                    <><Flame className="h-4 w-4" /> Mint for ${selected.mint_price}</>
+                    <><Flame className="h-4 w-4" /> Contract not connected</>
                   )}
                 </button>
                 <a
