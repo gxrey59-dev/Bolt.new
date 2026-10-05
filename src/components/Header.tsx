@@ -4,7 +4,8 @@ import type { Faction, Sweep } from '@/lib/types';
 import { supabase } from '@/lib/supabase';
 
 interface Props { factions: Faction[]; sweeps: Sweep[]; }
-export default function Header(_props: Props) {
+export default function Header(props: Props) {
+  void props; // Retain the original component API without using paper balances.
   const [balance, setBalance] = useState<number | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
