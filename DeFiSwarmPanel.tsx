@@ -6,8 +6,8 @@ import { Network, Bot, Boxes, DollarSign, Percent, Activity, ChevronRight, Chevr
 const PROVIDER = '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb';
 const RPCS = [
   'https://polygon-bor-rpc.publicnode.com',
-  'https://polygon-rpc.com',
-  'https://rpc.ankr.com/polygon',
+  'https://polygon.drpc.org',
+  'https://rpc-mainnet.matic.quiknode.pro',
 ];
 const addressPattern = /^0x[0-9a-fA-F]{40}$/;
 const DEFAULT_WALLET = '0xb4d70fcfe953b9a563dd96ee59d17082db253098';
@@ -271,7 +271,7 @@ export default function DeFiSwarmPanel() {
                 setError('');
                 setWalletMsg('');
                 setRunning(true);
-                setRefresh((value) => value + 1);
+                setRefresh((value: number) => value + 1);
               }
             }}
             className={`rounded-lg px-3 py-2 text-sm text-white disabled:opacity-50 ${
