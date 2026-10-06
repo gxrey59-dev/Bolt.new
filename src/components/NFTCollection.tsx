@@ -32,16 +32,22 @@ const FACTION_COLORS: Record<string, string> = {
 
 export default function NFTCollection() {
   const [nfts, setNfts] = useState<NFTCard[]>([]);
-  const minting: string | null = null;
-  const mintedIds = new Set<string>();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<NFTCard | null>(null);
   const [copied, setCopied] = useState(false);
 
   const fetchNFTs = useCallback(async () => {
-    const { data } = await supabase.from('nft_collection').select('*').order('power', { ascending: false });
-    setNfts((data ?? []) as NFTCard[]);
-    setLoading(false);
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.from('nft_collection').select('*').order('power', { ascending: false }).abortSignal(AbortSignal.timeout(10000));
+      if (error) throw new Error(error.message);
+      setNfts((data ?? []) as NFTCard[]);
+      setLoadError('');
+    } catch (cause) {
+      setNfts([]);
+      setLoadError(cause instanceof Error ? cause.message : 'Collection data unavailable.');
+    } finally { setLoading(false); }
   }, []);
 
   useEffect(() => { fetchNFTs(); }, [fetchNFTs]);
@@ -78,6 +84,7 @@ export default function NFTCollection() {
 
   return (
     <section className="space-y-5">
+      {loadError && <p role="alert" className="rounded-lg border border-red-500/30 p-3 text-sm text-red-300">{loadError}<button onClick={() => void fetchNFTs()} className="ml-3 underline">Retry</button></p>}
       {/* Hero Banner */}
       <div className="relative overflow-hidden rounded-2xl border border-amber-500/20 bg-gradient-to-br from-zinc-900 via-zinc-950 to-black p-6">
         <div className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-amber-500/10 blur-3xl" />
@@ -142,8 +149,6 @@ export default function NFTCollection() {
             const rarityStyle = RARITY_STYLES[nft.rarity] ?? RARITY_STYLES.rare;
             const factionMeta = FACTIONS.find(f => f.id === nft.faction_id);
             const accentColor = FACTION_COLORS[factionMeta?.color ?? 'blue'];
-            const isMinted = mintedIds.has(nft.id);
-            const soldOut = false;
             const mintProgress = 0;
 
             return (
@@ -211,12 +216,7 @@ export default function NFTCollection() {
 
                 {/* Actions */}
                 <div className="flex items-center gap-2">
-                  <button
-                    disabled title="Deploy a mint contract and connect a wallet first"
-                    className="flex flex-1 cursor-not-allowed items-center justify-center gap-1.5 rounded-xl bg-zinc-800 py-3 text-sm font-bold text-zinc-500"
-                >
-                  <Flame className="h-4 w-4" /> Contract not connected
-                </button>
+                  <button disabled title="Deploy a mint contract and connect a wallet first" className="flex flex-1 cursor-not-allowed items-center justify-center gap-1.5 rounded-xl bg-zinc-800 py-3 text-sm font-bold text-zinc-500"><Flame className="h-4 w-4" /> Contract not connected</button>
                   <button
                     onClick={() => handleShareCard(nft)}
                     className="flex items-center justify-center rounded-xl bg-zinc-800 px-3 py-2.5 text-zinc-400 transition-all hover:bg-zinc-700 hover:text-zinc-200"
@@ -313,24 +313,7 @@ export default function NFTCollection() {
 
               {/* Actions */}
               <div className="flex items-center gap-2">
-                <button
-                  disabled title="Deploy a mint contract and connect a wallet first"
-                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-bold transition-all ${
-                    false
-                      ? 'cursor-not-allowed bg-zinc-800 text-zinc-600'
-                      : minting === selected.id
-                      ? 'bg-zinc-800 text-zinc-400'
-                      : 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
-                  }`}
-                >
-                  {minting === selected.id ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : false ? (
-                    'Sold Out'
-                  ) : (
-                    <><Flame className="h-4 w-4" /> Contract not connected</>
-                  )}
-                </button>
+                <button disabled title="Deploy a mint contract and connect a wallet first" className="flex flex-1 cursor-not-allowed items-center justify-center gap-1.5 rounded-xl bg-zinc-800 py-3 text-sm font-bold text-zinc-500"><Flame className="h-4 w-4" /> Contract not connected</button>
                 <a
                   href={selected.image_url}
                   download={`wutang-nft-${selected.faction_id}.webp`}
