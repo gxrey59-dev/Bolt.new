@@ -13,158 +13,13 @@ const supabase = createClient(
 
 const BINANCE_BASE = "https://api.binance.us";
 
-// ─── Types ─────────────────────────────────────────────────────────
-
-interface Candle { open: number; high: number; low: number; close: number; volume: number; }
-interface Indicators {
-  rsi: number; macdLine: number; macdSignal: number; macdHistogram: number;
-  ema12: number; ema26: number; sma20: number; sma50: number; atr: number;
-  bollingerUpper: number; bollingerMiddle: number; bollingerLower: number;
-}
-interface Trade {
-  side: "long" | "short"; strategy: string; symbol: string;
-  entryPrice: number; entryPeriod: number; quantity: number;
-  stopLoss: number; takeProfit: number;
-}
-interface ClosedTrade {
-  strategy: string; side: "long" | "short"; entryPrice: number; exitPrice: number;
-  pnl: number; pnlPct: number; holdPeriods: number; exitReason: string; period: number;
-}
-interface BacktestParams {
-  rsiOversold: number; rsiOverbought: number; macdThreshold: number;
-  momentumLookback: number; stopLossPct: number; takeProfitPct: number;
-  maxPositionPct: number; activeStrategies: string[];
-}
-interface BacktestResult {
-  finalEquity: number; totalReturnPct: number; annualizedReturnPct: number;
-  maxDrawdownPct: number; sharpeRatio: number; sortinoRatio: number;
-  totalTrades: number; winningTrades: number; losingTrades: number;
-  winRate: number; avgWin: number; avgLoss: number; profitFactor: number;
-  bestTradePct: number; worstTradePct: number; avgHoldPeriods: number;
-  equityCurve: { period: number; equity: number }[];
-  strategyBreakdown: Record<string, { trades: number; wins: number; pnl: number; winRate: number }>;
-  trades: ClosedTrade[];
-}
-
-// ─── Technical Indicators ──────────────────────────────────────────
-
-function calcRSI(closes: number[], period: number): number {
-  if (closes.length < period + 1) return 50;
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains += diff; else losses -= diff;
-  }
-  if (losses === 0) return 100;
-  return 100 - 100 / (1 + gains / losses / period * period);
-}
-
-function calcEMA(values: number[], period: number): number {
-  if (values.length === 0) return 0;
-  const k = 2 / (period + 1);
-  let ema = values[0];
-  for (let i = 1; i < values.length; i++) ema = values[i] * k + ema * (1 - k);
-  return ema;
-}
-
-function calcSMA(values: number[], period: number): number {
-  if (values.length < period) return values.reduce((a, b) => a + b, 0) / Math.max(values.length, 1);
-  return values.slice(-period).reduce((a, b) => a + b, 0) / period;
-}
-
-function calcEMAArray(values: number[], period: number): number[] {
-  const k = 2 / (period + 1);
-  const result: number[] = [values[0]];
-  for (let i = 1; i < values.length; i++) result.push(values[i] * k + result[i - 1] * (1 - k));
-  return result;
-}
-
-function calcMACD(closes: number[]): { line: number; signal: number; histogram: number } {
-  if (closes.length < 35) return { line: 0, signal: 0, histogram: 0 };
-  const ema12 = calcEMAArray(closes, 12);
-  const ema26 = calcEMAArray(closes, 26);
-  const macdLine = closes.map((_, i) => ema12[i] - ema26[i]);
-  const signalArr = calcEMAArray(macdLine, 9);
-  const line = macdLine[macdLine.length - 1];
-  const signal = signalArr[signalArr.length - 1];
-  return { line, signal, histogram: line - signal };
-}
-
-function calcATR(candles: Candle[], period: number): number {
-  if (candles.length < period + 1) return 0;
-  let sum = 0;
-  for (let i = candles.length - period; i < candles.length; i++) {
-    sum += Math.max(
-      candles[i].high - candles[i].low,
-      Math.abs(candles[i].high - candles[i - 1].close),
-      Math.abs(candles[i].low - candles[i - 1].close),
-    );
-  }
-  return sum / period;
-}
-
-function calcBollinger(closes: number[], period: number, stdDev: number) {
-  if (closes.length < period) {
-    const avg = closes.reduce((a, b) => a + b, 0) / Math.max(closes.length, 1);
-    return { upper: avg, middle: avg, lower: avg };
-  }
-  const slice = closes.slice(-period);
-  const sma = slice.reduce((a, b) => a + b, 0) / period;
-  const variance = slice.reduce((s, v) => s + (v - sma) ** 2, 0) / period;
-  const sd = Math.sqrt(variance);
-  return { upper: sma + stdDev * sd, middle: sma, lower: sma - stdDev * sd };
-}
-
-function calcAllIndicators(candles: Candle[]): Indicators {
-  const closes = candles.map((c) => c.close);
-  const macd = calcMACD(closes);
-  const bb = calcBollinger(closes, 20, 2);
-  return {
-    rsi: calcRSI(closes, 14), macdLine: macd.line, macdSignal: macd.signal,
-    macdHistogram: macd.histogram, ema12: calcEMA(closes, 12), ema26: calcEMA(closes, 26),
-    sma20: calcSMA(closes, 20), sma50: calcSMA(closes, 50), atr: calcATR(candles, 14),
-    bollingerUpper: bb.upper, bollingerMiddle: bb.middle, bollingerLower: bb.lower,
-  };
-}
-
-// ─── Strategy Evaluation ───────────────────────────────────────────
-
-function evaluateStrategies(candles: Candle[], currentPrice: number, params: BacktestParams): {
-  side: "long" | "short"; strategy: string;
-} | null {
-  const ind = calcAllIndicators(candles);
-  const signals: { side: "long" | "short"; strategy: string; strength: number }[] = [];
-
-  if (ind.rsi <= params.rsiOversold)
-    signals.push({ side: "long", strategy: "rsi_oversold", strength: (params.rsiOversold - ind.rsi) / params.rsiOversold });
-  if (ind.rsi >= params.rsiOverbought)
-    signals.push({ side: "short", strategy: "rsi_overbought", strength: (ind.rsi - params.rsiOverbought) / (100 - params.rsiOverbought) });
-  if (ind.macdHistogram > params.macdThreshold && ind.macdLine > ind.macdSignal)
-    signals.push({ side: "long", strategy: "macd_crossover", strength: Math.min(Math.abs(ind.macdHistogram) / Math.max(Math.abs(ind.macdLine), 0.001), 1) });
-  if (ind.macdHistogram < -Math.abs(params.macdThreshold) && ind.macdLine < ind.macdSignal)
-    signals.push({ side: "short", strategy: "macd_crossover", strength: Math.min(Math.abs(ind.macdHistogram) / Math.max(Math.abs(ind.macdLine), 0.001), 1) });
-  if (candles.length >= params.momentumLookback + 1) {
-    const rc = candles.slice(-params.momentumLookback).map((c) => c.close);
-    const mom = ((rc[rc.length - 1] - rc[0]) / rc[0]) * 100;
-    if (mom > 2 && ind.ema12 > ind.ema26) signals.push({ side: "long", strategy: "momentum_breakout", strength: Math.min(mom / 5, 1) });
-    if (mom < -2 && ind.ema12 < ind.ema26) signals.push({ side: "short", strategy: "momentum_breakout", strength: Math.min(Math.abs(mom) / 5, 1) });
-  }
-  const bw = ind.bollingerUpper - ind.bollingerLower;
-  if (bw > 0) {
-    if (currentPrice <= ind.bollingerLower) signals.push({ side: "long", strategy: "mean_reversion", strength: (ind.bollingerLower - currentPrice) / bw + 0.5 });
-    if (currentPrice >= ind.bollingerUpper) signals.push({ side: "short", strategy: "mean_reversion", strength: (currentPrice - ind.bollingerUpper) / bw + 0.5 });
-  }
-
-  if (signals.length === 0) return null;
-  signals.sort((a, b) => b.strength - a.strength);
-  return { side: signals[0].side, strategy: signals[0].strategy };
-}
-
-// ─── Price Path Generation ──────────────────────────────────────────
+import { calibrateGBM, makeRng, generatePricePath, runSingleBacktest, optimizeParams, scoreResult, runSyntheticHoldout, type Candle, type BacktestParams, type BacktestResult } from "./simulation.ts";
 
 async function fetchRealHistory(symbol: string): Promise<Candle[]> {
   try {
-    const res = await fetch(`${BINANCE_BASE}/api/v3/klines?symbol=${symbol}&interval=1d&limit=1000`);
+    const res = await fetch(`${BINANCE_BASE}/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=1d&limit=1000`, {
+      signal: AbortSignal.timeout(15000), redirect: "error",
+    });
     if (!res.ok) return [];
     const data = await res.json();
     return (data as unknown[][]).map((d) => ({
@@ -175,231 +30,18 @@ async function fetchRealHistory(symbol: string): Promise<Candle[]> {
   } catch { return []; }
 }
 
-function calibrateGBM(candles: Candle[]): { mu: number; sigma: number; startPrice: number } {
-  if (candles.length < 10) return { mu: 0.0002, sigma: 0.03, startPrice: 50000 };
-  const returns: number[] = [];
-  for (let i = 1; i < candles.length; i++) {
-    if (candles[i - 1].close > 0) returns.push(Math.log(candles[i].close / candles[i - 1].close));
-  }
-  const n = returns.length;
-  const mu = returns.reduce((a, b) => a + b, 0) / n;
-  const sigma = Math.sqrt(returns.reduce((s, r) => s + (r - mu) ** 2, 0) / n);
-  return { mu, sigma, startPrice: candles[candles.length - 1].close };
-}
-
-function makeRng(seed: number): () => number {
-  let s = seed;
-  return () => {
-    s |= 0; s = (s + 0x6D2B79F5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function generatePricePath(startPrice: number, mu: number, sigma: number, periods: number, rng: () => number): number[] {
-  const prices: number[] = [startPrice];
-  for (let i = 1; i < periods; i++) {
-    const u1 = Math.max(rng(), 1e-10), u2 = rng();
-    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-    prices.push(Math.max(prices[i - 1] * Math.exp(mu + sigma * z), 0.01));
-  }
-  return prices;
-}
-
-// ─── Backtest Engine ───────────────────────────────────────────────
-
-function runSingleBacktest(
-  pricePaths: Map<string, number[]>,
-  params: BacktestParams,
-  startingCapital: number,
-): BacktestResult {
-  const symbols = Array.from(pricePaths.keys());
-  const totalPeriods = pricePaths.get(symbols[0])?.length ?? 0;
-  let equity = startingCapital;
-  const openTrades: Trade[] = [];
-  const closedTrades: ClosedTrade[] = [];
-  const equityCurve: { period: number; equity: number }[] = [];
-  let peakEquity = startingCapital, maxDrawdown = 0;
-  const candleBuffers = new Map<string, Candle[]>();
-  for (const sym of symbols) candleBuffers.set(sym, []);
-
-  for (let period = 0; period < totalPeriods; period++) {
-    for (const sym of symbols) {
-      const prices = pricePaths.get(sym)!;
-      const prev = period > 0 ? prices[period - 1] : prices[0];
-      const high = Math.max(prices[period], prev) * 1.002;
-      const low = Math.min(prices[period], prev) * 0.998;
-      candleBuffers.get(sym)!.push({ open: prev, high, low, close: prices[period], volume: 1000 });
-      const buf = candleBuffers.get(sym)!;
-      if (buf.length > 100) buf.shift();
-    }
-
-    // Check exits on open trades
-    for (let i = openTrades.length - 1; i >= 0; i--) {
-      const trade = openTrades[i];
-      const cp = pricePaths.get(trade.symbol)![period];
-      const isLong = trade.side === "long";
-      let shouldClose = false, exitPrice = cp, exitReason = "";
-
-      if (isLong) {
-        if (cp <= trade.stopLoss) { shouldClose = true; exitPrice = trade.stopLoss; exitReason = "stop_loss"; }
-        else if (cp >= trade.takeProfit) { shouldClose = true; exitPrice = trade.takeProfit; exitReason = "take_profit"; }
-      } else {
-        if (cp >= trade.stopLoss) { shouldClose = true; exitPrice = trade.stopLoss; exitReason = "stop_loss"; }
-        else if (cp <= trade.takeProfit) { shouldClose = true; exitPrice = trade.takeProfit; exitReason = "take_profit"; }
-      }
-
-      if (shouldClose) {
-        const hold = period - trade.entryPeriod;
-        const pnl = isLong ? (exitPrice - trade.entryPrice) * trade.quantity : (trade.entryPrice - exitPrice) * trade.quantity;
-        const posVal = trade.entryPrice * trade.quantity;
-        equity += posVal + pnl;
-        closedTrades.push({ strategy: trade.strategy, side: trade.side, entryPrice: trade.entryPrice, exitPrice, pnl, pnlPct: (pnl / posVal) * 100, holdPeriods: hold, exitReason, period: trade.entryPeriod });
-        openTrades.splice(i, 1);
-      }
-    }
-
-    // Check for new entries
-    for (const sym of symbols) {
-      const candles = candleBuffers.get(sym)!;
-      if (candles.length < 50) continue;
-      const cp = pricePaths.get(sym)![period];
-      const hasOpen = openTrades.some((t) => t.symbol === sym);
-      if (hasOpen) continue;
-      const signal = evaluateStrategies(candles, cp, params);
-      if (signal && equity > 10) {
-        const posVal = equity * (params.maxPositionPct / 100);
-        const qty = posVal / cp;
-        const isLong = signal.side === "long";
-        openTrades.push({
-          side: signal.side, strategy: signal.strategy, symbol: sym,
-          entryPrice: cp, entryPeriod: period, quantity: qty,
-          stopLoss: isLong ? cp * (1 - params.stopLossPct / 100) : cp * (1 + params.stopLossPct / 100),
-          takeProfit: isLong ? cp * (1 + params.takeProfitPct / 100) : cp * (1 - params.takeProfitPct / 100),
-        });
-        equity -= posVal;
-      }
-    }
-
-    // Track equity
-    const totalEquity = equity + openTrades.reduce((s, t) => {
-      const cp = pricePaths.get(t.symbol)![period];
-      return s + (t.side === "long" ? (cp - t.entryPrice) : (t.entryPrice - cp)) * t.quantity;
-    }, 0);
-    equityCurve.push({ period, equity: totalEquity });
-    if (totalEquity > peakEquity) peakEquity = totalEquity;
-    const dd = ((peakEquity - totalEquity) / peakEquity) * 100;
-    if (dd > maxDrawdown) maxDrawdown = dd;
-  }
-
-  // Close remaining
-  for (const trade of openTrades) {
-    const lastPrice = pricePaths.get(trade.symbol)![totalPeriods - 1];
-    const isLong = trade.side === "long";
-    const pnl = isLong ? (lastPrice - trade.entryPrice) * trade.quantity : (trade.entryPrice - lastPrice) * trade.quantity;
-    const posVal = trade.entryPrice * trade.quantity;
-    equity += posVal + pnl;
-    closedTrades.push({ strategy: trade.strategy, side: trade.side, entryPrice: trade.entryPrice, exitPrice: lastPrice, pnl, pnlPct: (pnl / posVal) * 100, holdPeriods: totalPeriods - 1 - trade.entryPeriod, exitReason: "end_of_sim", period: trade.entryPeriod });
-  }
-
-  const wins = closedTrades.filter((t) => t.pnl >= 0);
-  const losses = closedTrades.filter((t) => t.pnl < 0);
-  const totalWinPnl = wins.reduce((s, t) => s + t.pnl, 0);
-  const totalLossPnl = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
-  const totalReturnPct = ((equity - startingCapital) / startingCapital) * 100;
-  const years = totalPeriods / 365;
-  const annualizedReturnPct = years > 0 && equity > 0 ? (Math.pow(equity / startingCapital, 1 / years) - 1) * 100 : 0;
-
-  const returns = closedTrades.map((t) => t.pnlPct / 100);
-  const avgReturn = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
-  const returnStd = returns.length > 1 ? Math.sqrt(returns.reduce((s, r) => s + (r - avgReturn) ** 2, 0) / (returns.length - 1)) : 0;
-  const sharpe = returnStd > 0 ? (avgReturn / returnStd) * Math.sqrt(252) : 0;
-  const downsideReturns = returns.filter((r) => r < 0);
-  const downsideStd = downsideReturns.length > 1 ? Math.sqrt(downsideReturns.reduce((s, r) => s + r * r, 0) / downsideReturns.length) : 0;
-  const sortino = downsideStd > 0 ? (avgReturn / downsideStd) * Math.sqrt(252) : 0;
-
-  const strategyBreakdown: Record<string, { trades: number; wins: number; pnl: number; winRate: number }> = {};
-  for (const t of closedTrades) {
-    if (!strategyBreakdown[t.strategy]) strategyBreakdown[t.strategy] = { trades: 0, wins: 0, pnl: 0, winRate: 0 };
-    strategyBreakdown[t.strategy].trades++;
-    if (t.pnl >= 0) strategyBreakdown[t.strategy].wins++;
-    strategyBreakdown[t.strategy].pnl += t.pnl;
-  }
-  for (const key of Object.keys(strategyBreakdown)) {
-    const sb = strategyBreakdown[key];
-    sb.winRate = sb.trades > 0 ? (sb.wins / sb.trades) * 100 : 0;
-  }
-
-  return {
-    finalEquity: equity, totalReturnPct, annualizedReturnPct, maxDrawdownPct: maxDrawdown,
-    sharpeRatio: sharpe, sortinoRatio: sortino,
-    totalTrades: closedTrades.length, winningTrades: wins.length, losingTrades: losses.length,
-    winRate: closedTrades.length > 0 ? (wins.length / closedTrades.length) * 100 : 0,
-    avgWin: wins.length > 0 ? totalWinPnl / wins.length : 0,
-    avgLoss: losses.length > 0 ? totalLossPnl / losses.length : 0,
-    profitFactor: totalLossPnl > 0 ? totalWinPnl / totalLossPnl : 0,
-    bestTradePct: closedTrades.length > 0 ? Math.max(...closedTrades.map((t) => t.pnlPct)) : 0,
-    worstTradePct: closedTrades.length > 0 ? Math.min(...closedTrades.map((t) => t.pnlPct)) : 0,
-    avgHoldPeriods: closedTrades.length > 0 ? closedTrades.reduce((s, t) => s + t.holdPeriods, 0) / closedTrades.length : 0,
-    equityCurve: equityCurve.filter((_, i) => i % Math.max(1, Math.floor(equityCurve.length / 300)) === 0),
-    strategyBreakdown, trades: closedTrades,
-  };
-}
-
-// ─── Coordinate Descent Optimizer ──────────────────────────────────
-
-function scoreResult(r: BacktestResult): number {
-  return r.sharpeRatio - r.maxDrawdownPct * 0.1 + r.annualizedReturnPct * 0.05;
-}
-
-function optimizeParams(
-  pricePaths: Map<string, number[]>,
-  base: BacktestParams,
-  startingCapital: number,
-): { params: BacktestParams; result: BacktestResult } {
-  let best = { ...base };
-  let bestResult = runSingleBacktest(pricePaths, best, startingCapital);
-  let bestScore = scoreResult(bestResult);
-
-  const paramGrids: Record<string, number[]> = {
-    rsiOversold: [20, 25, 30, 35],
-    rsiOverbought: [65, 70, 75, 80],
-    stopLossPct: [1, 2, 3, 5],
-    takeProfitPct: [2, 4, 6, 8],
-    momentumLookback: [3, 5, 8, 12],
-  };
-
-  // Coordinate descent: optimize one parameter at a time, 1 round
-  for (let round = 0; round < 1; round++) {
-    for (const [key, values] of Object.entries(paramGrids)) {
-      for (const val of values) {
-        if (key === "takeProfitPct" && val <= best.stopLossPct) continue;
-        const candidate = { ...best, [key]: val };
-        const result = runSingleBacktest(pricePaths, candidate, startingCapital);
-        const score = scoreResult(result);
-        if (score > bestScore) {
-          bestScore = score;
-          best = candidate;
-          bestResult = result;
-        }
-      }
-    }
-  }
-
-  return { params: best, result: bestResult };
-}
-
 // ─── Main Handler ──────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
 
+  let runId: string | null = null;
   try {
     const url = new URL(req.url);
     const path = url.pathname.replace("/backtest-engine", "");
 
     if (path === "/run") {
+      if (req.method !== "POST") return new Response(JSON.stringify({ error: "Use POST" }), { status: 405, headers: corsHeaders });
       const body = await req.json().catch(() => ({}));
       const years: number = body.years ?? 50;
       const iterations: number = Math.min(body.iterations ?? 3, 5);
@@ -407,11 +49,14 @@ Deno.serve(async (req: Request) => {
       const optimize: boolean = body.optimize ?? true;
       const symbols: string[] = body.symbols ?? ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 
-      const { data: runRecord } = await supabase.from("backtest_runs").insert({
-        label: `${years}-Year Monte Carlo${optimize ? " + Optimization" : ""}`,
-        years, iterations, starting_capital: startingCapital, status: "running", strategy_params: body.params ?? {},
-      }).select().single();
-      const runId = runRecord.id;
+      if (!Number.isFinite(years) || years < 1 || years > 50 ||
+          !Number.isInteger(iterations) || iterations < 1 ||
+          !Number.isFinite(startingCapital) || startingCapital <= 0 || typeof optimize !== "boolean" ||
+          !Array.isArray(symbols) || symbols.length < 1 || symbols.length > 10 ||
+          symbols.some(s => typeof s !== "string" || !/^[A-Z0-9]{5,20}$/.test(s)) ||
+          new Set(symbols).size !== symbols.length) {
+        return new Response(JSON.stringify({ error: "Invalid backtest request" }), { status: 400, headers: corsHeaders });
+      }
 
       // Fetch real history to calibrate GBM
       const calibrationData = new Map<string, { mu: number; sigma: number; startPrice: number }>();
@@ -419,9 +64,9 @@ Deno.serve(async (req: Request) => {
         calibrationData.set(sym, calibrateGBM(await fetchRealHistory(sym)));
       }
 
-      // Daily candles: 50 years = ~18,250 periods. Cap at 5000 for performance.
-      const periodsPerIteration = Math.min(years * 365, 2000);
-      const actualYears = periodsPerIteration / 365;
+      // Synthetic daily paths are capped; never claim the requested horizon was simulated.
+      const periodsPerIteration = Math.min(Math.floor(years * 365) + 1, 2000);
+      const actualYears = (periodsPerIteration - 1) / 365;
 
       const baseParams: BacktestParams = {
         rsiOversold: body.params?.rsiOversold ?? 30,
@@ -431,10 +76,25 @@ Deno.serve(async (req: Request) => {
         stopLossPct: body.params?.stopLossPct ?? 2,
         takeProfitPct: body.params?.takeProfitPct ?? 4,
         maxPositionPct: body.params?.maxPositionPct ?? 10,
+        feeBps: body.params?.feeBps ?? 10,
+        slippageBps: body.params?.slippageBps ?? 5,
         activeStrategies: body.params?.activeStrategies ?? [
           "rsi_oversold", "rsi_overbought", "macd_crossover", "momentum_breakout", "mean_reversion",
         ],
       };
+
+      // Validate strategy/cost inputs before creating a persistent run.
+      try {
+        runSingleBacktest(new Map([[symbols[0], [100, 100]]]), baseParams, startingCapital);
+      } catch {
+        return new Response(JSON.stringify({ error: "Invalid strategy or cost parameters" }), { status: 400, headers: corsHeaders });
+      }
+      const { data: runRecord, error: createError } = await supabase.from("backtest_runs").insert({
+        label: `${actualYears.toFixed(2)}-Year SYNTHETIC stress test${optimize ? " + in-sample optimization" : ""}`,
+        years: actualYears, iterations, starting_capital: startingCapital, status: "running", strategy_params: baseParams,
+      }).select().single();
+      if (createError || !runRecord) throw new Error("Unable to create backtest run");
+      runId = runRecord.id;
 
       // Monte Carlo with base params
       let bestResult: BacktestResult | null = null;
@@ -480,20 +140,35 @@ Deno.serve(async (req: Request) => {
         optimizedResult = opt.result;
       }
 
+      const holdout = runSyntheticHoldout(calibrationData, optimizedParams, periodsPerIteration, startingCapital);
+      const validation = {
+        kind: "synthetic_unseen_seed", seed: 987654321,
+        historicalOutOfSample: false, approvedForLive: false,
+        warning: "GBM simulations do not establish a real trading edge. In-sample optimization results are not validation. Shorts are hypothetical; borrow/funding and market impact are not modeled.",
+        costs: { feeBps: baseParams.feeBps, slippageBps: baseParams.slippageBps, assumedNotExchangeQuote: true },
+        result: {
+          finalEquity: holdout.finalEquity, totalReturnPct: holdout.totalReturnPct,
+          maxDrawdownPct: holdout.maxDrawdownPct, sharpeRatio: holdout.sharpeRatio,
+          totalTrades: holdout.totalTrades, winRate: holdout.winRate,
+          netExpectancy: holdout.totalTrades ? (holdout.finalEquity - startingCapital) / holdout.totalTrades : null,
+        },
+      };
+
       // Store trades (limit 200)
       const sampleTrades = optimizedResult.trades.slice(0, 200);
       if (sampleTrades.length > 0) {
         const rows = sampleTrades.map((t) => ({
-          run_id: runId, iteration: 0, symbol: "MIXED", side: t.side, strategy: t.strategy,
+          run_id: runId, iteration: 0, symbol: t.symbol, side: t.side, strategy: t.strategy,
           entry_price: t.entryPrice, exit_price: t.exitPrice, pnl: t.pnl, pnl_pct: t.pnlPct,
           hold_periods: t.holdPeriods, exit_reason: t.exitReason, period: t.period,
         }));
         for (let i = 0; i < rows.length; i += 100) {
-          await supabase.from("backtest_trades").insert(rows.slice(i, i + 100));
+          const { error } = await supabase.from("backtest_trades").insert(rows.slice(i, i + 100));
+          if (error) throw new Error("Unable to persist backtest trades");
         }
       }
 
-      await supabase.from("backtest_runs").update({
+      const { error: updateError } = await supabase.from("backtest_runs").update({
         final_equity: optimizedResult.finalEquity,
         total_return_pct: optimizedResult.totalReturnPct,
         annualized_return_pct: optimizedResult.annualizedReturnPct,
@@ -509,20 +184,21 @@ Deno.serve(async (req: Request) => {
         best_trade_pct: optimizedResult.bestTradePct,
         worst_trade_pct: optimizedResult.worstTradePct,
         avg_hold_periods: optimizedResult.avgHoldPeriods,
-        strategy_params: { base: baseParams, optimized: optimizedParams },
+        strategy_params: { base: baseParams, optimized: optimizedParams, validation },
         equity_curve: optimizedResult.equityCurve,
         strategy_breakdown: optimizedResult.strategyBreakdown,
         status: "completed",
       }).eq("id", runId);
+      if (updateError) throw new Error("Unable to persist backtest results");
 
       await supabase.from("audit_log").insert({
         event_type: "backtest_complete", entity_type: "backtest_runs", entity_id: runId,
-        message: `${actualYears.toFixed(0)}yr backtest: ${optimizedResult.totalTrades} trades, ${optimizedResult.totalReturnPct.toFixed(1)}% return, Sharpe ${optimizedResult.sharpeRatio.toFixed(2)}, DD ${optimizedResult.maxDrawdownPct.toFixed(1)}%`,
+        message: `${actualYears.toFixed(2)}yr SYNTHETIC in-sample stress test: ${optimizedResult.totalTrades} trades; NOT live validation`,
         metadata: { run_id: runId, years: actualYears, iterations, optimized: optimize },
       });
 
       return new Response(JSON.stringify({
-        runId, years: actualYears, iterations, baseParams, optimizedParams,
+        runId, years: actualYears, requestedYears: years, iterations, baseParams, optimizedParams, validation,
         optimized: {
           finalEquity: optimizedResult.finalEquity,
           totalReturnPct: optimizedResult.totalReturnPct,
@@ -567,7 +243,8 @@ Deno.serve(async (req: Request) => {
     });
   } catch (err) {
     console.error("backtest-engine error:", err);
-    return new Response(JSON.stringify({ error: err.message }), {
+    if (runId) await supabase.from("backtest_runs").update({ status: "failed" }).eq("id", runId);
+    return new Response(JSON.stringify({ error: "Backtest failed; no live trading approval was issued" }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
