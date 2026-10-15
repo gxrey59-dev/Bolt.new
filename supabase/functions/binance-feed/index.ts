@@ -671,9 +671,12 @@ async function executeTrade(
       availableBalance = Math.max(0, balance - deployed);
     }
   }
-  if (availableBalance < 5) return { tradeId: null, reasoning: `Insufficient available balance: ${availableBalance.toFixed(2)}`, error: null };
+  const minNotional = 5.5; // Binance requires $5 min order + buffer
+  if (availableBalance < minNotional) return { tradeId: null, reasoning: `Insufficient available balance: ${availableBalance.toFixed(2)} (min ${minNotional})`, error: null };
 
   const positionValue = Math.min(availableBalance * (config.maxPositionPct / 100), availableBalance * 0.8);
+  // Skip if position value below Binance MIN_NOTIONAL
+  if (isLive && positionValue < minNotional) return { tradeId: null, reasoning: `Position value ${positionValue.toFixed(2)} below Binance min ${minNotional}`, error: null };
   let quantity = positionValue / currentPrice;
 
   // For live trades: round to valid LOT_SIZE step
