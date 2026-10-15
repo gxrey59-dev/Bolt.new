@@ -51,13 +51,15 @@ function roundToStep(value: number, step: number): number {
   return Math.floor(value / step) * step;
 }
 
+// Curated list: removed historically losing symbols (DOTUSDT -$6.26, BNBUSDT -$5.61,
+// SOLUSDT -$3.10, XRPUSDT -$1.74, ETHUSDT -$1.26, AVAXUSDT -$0.25)
+// Kept profitable + neutral symbols only
 const TRADING_PAIRS = [
-  "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-  "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
-  "LTCUSDT", "BCHUSDT", "ATOMUSDT", "NEARUSDT", "APTUSDT",
-  "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT", "SEIUSDT",
-  "TIAUSDT", "FILUSDT", "IMXUSDT", "MATICUSDT",
-  "RNDRUSDT", "FTMUSDT", "SANDUSDT", "MANAUSDT", "AXSUSDT",
+  "BTCUSDT", "DOGEUSDT", "LINKUSDT",
+  "ADAUSDT", "IMXUSDT", "SEIUSDT",
+  "MANAUSDT", "TIAUSDT", "FILUSDT",
+  "ATOMUSDT", "SANDUSDT", "AXSUSDT",
+  "BCHUSDT", "LTCUSDT",
 ];
 
 const FACTION_IDS = [
