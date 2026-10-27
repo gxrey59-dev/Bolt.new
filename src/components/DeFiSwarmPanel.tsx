@@ -47,18 +47,57 @@ type Snapshot = {
   currency: string;
   source: string;
 };
+type EngineSnapshot = {
+  block: string;
+  blockTime: number;
+  checkedAt: string;
+  contract: string;
+  nativeBalance: string;
+  source: string;
+};
+type EngineConfig = {
+  name: string;
+  icon: string;
+  chain: string;
+  faction: string;
+  protocol: string;
+  chainId: bigint;
+  nativeSymbol: string;
+  contract: string;
+  contractLabel: string;
+  endpoints: string[];
+};
 
-const protocolCards = [
-  { name: 'Cuban Linx Yield Cooperative', icon: '🏦', chain: 'Polygon', faction: 'The Chef', protocol: 'Aave V3', connected: true },
-  { name: 'Liquid Swords Swarm', icon: '🦄', chain: 'Arbitrum', faction: 'The Genius', protocol: 'Uniswap V3', connected: false },
-  { name: 'Supreme Clientele Pool', icon: '🌊', chain: 'Ethereum', faction: 'Tony Starks', protocol: 'Curve', connected: false },
-  { name: 'Golden Arms Bridge Swarm', icon: '⚖️', chain: 'Optimism', faction: 'U-God', protocol: 'Balancer', connected: false },
-  { name: 'Tical Flash Swarm', icon: '📊', chain: 'Base', faction: 'Meth Lab', protocol: 'Compound V3', connected: false },
+const protocolCards: EngineConfig[] = [
+  {
+    name: 'Cuban Linx Yield Cooperative', icon: '🏦', chain: 'Polygon', faction: 'The Chef', protocol: 'Aave V3',
+    chainId: 137n, nativeSymbol: 'POL', contract: AAVE_PROVIDER, contractLabel: 'PoolAddressesProvider', endpoints: RPC_ENDPOINTS,
+  },
+  {
+    name: 'Liquid Swords Swarm', icon: '🦄', chain: 'Arbitrum', faction: 'The Genius', protocol: 'Uniswap V3',
+    chainId: 42161n, nativeSymbol: 'ETH', contract: '0x1F98431c8aD98523631AE4a59f267346ea31F984', contractLabel: 'V3 Factory',
+    endpoints: ['https://gateway.tenderly.co/public/arbitrum', 'https://arb1.arbitrum.io/rpc', 'https://arbitrum-one-rpc.publicnode.com'],
+  },
+  {
+    name: 'Supreme Clientele Pool', icon: '🌊', chain: 'Ethereum', faction: 'Tony Starks', protocol: 'Curve',
+    chainId: 1n, nativeSymbol: 'ETH', contract: '0x0000000022D53366457F9d5E68Ec105046FC4383', contractLabel: 'Address Provider',
+    endpoints: ['https://gateway.tenderly.co/public/mainnet', 'https://ethereum-rpc.publicnode.com', 'https://cloudflare-eth.com'],
+  },
+  {
+    name: 'Golden Arms Bridge Swarm', icon: '⚖️', chain: 'Optimism', faction: 'U-God', protocol: 'Balancer',
+    chainId: 10n, nativeSymbol: 'ETH', contract: '0xBA12222222228d8Ba445958a75a0704d566BF2C8', contractLabel: 'Vault',
+    endpoints: ['https://gateway.tenderly.co/public/optimism', 'https://mainnet.optimism.io', 'https://optimism-rpc.publicnode.com'],
+  },
+  {
+    name: 'Tical Flash Swarm', icon: '📊', chain: 'Base', faction: 'Meth Lab', protocol: 'Compound V3',
+    chainId: 8453n, nativeSymbol: 'ETH', contract: '0xb125E6687d4313864e53df431d5425969c15Eb2F', contractLabel: 'cUSDCv3 Comet',
+    endpoints: ['https://gateway.tenderly.co/public/base', 'https://mainnet.base.org', 'https://base-rpc.publicnode.com'],
+  },
 ];
 
 function quantity(value: unknown): bigint {
   if (typeof value !== 'string' || !/^0x[0-9a-f]+$/i.test(value)) {
-    throw new Error('The Polygon RPC returned an invalid hexadecimal value.');
+    throw new Error('The RPC returned an invalid hexadecimal value.');
   }
   return BigInt(value);
 }
@@ -202,6 +241,53 @@ async function readWithFailover(wallet: string, signal: AbortSignal, provider: W
   throw new Error(`Polygon providers are unavailable. Last response: ${reason}`);
 }
 
+async function readEngine(request: Rpc, config: EngineConfig, wallet: string, source: string, signal: AbortSignal): Promise<EngineSnapshot> {
+  if (quantity(await request('eth_chainId', [], signal)) !== config.chainId) {
+    throw new Error(`Wrong chain returned for ${config.chain}.`);
+  }
+  const blockInfo = await request('eth_getBlockByNumber', ['latest', false], signal) as {
+    timestamp?: unknown;
+    number?: unknown;
+  } | null;
+  if (!blockInfo) throw new Error(`${config.chain} did not return a block.`);
+  const block = blockInfo.number;
+  const blockNumber = quantity(block);
+  const blockTime = Number(quantity(blockInfo.timestamp)) * 1000;
+  if (Date.now() - blockTime > 300_000 || blockTime - Date.now() > 30_000) {
+    throw new Error(`${config.chain} returned a stale block.`);
+  }
+  const [code, balance] = await Promise.all([
+    request('eth_getCode', [config.contract, block], signal),
+    request('eth_getBalance', [wallet, block], signal),
+  ]);
+  if (typeof code !== 'string' || !/^0x[0-9a-f]+$/i.test(code) || code === '0x0') {
+    throw new Error(`${config.protocol} ${config.contractLabel} could not be verified.`);
+  }
+  return {
+    block: blockNumber.toString(),
+    blockTime,
+    checkedAt: new Date().toISOString(),
+    contract: config.contract,
+    nativeBalance: decimal(quantity(balance), 10n ** 18n),
+    source,
+  };
+}
+
+async function readEngineWithFailover(config: EngineConfig, wallet: string, signal: AbortSignal): Promise<EngineSnapshot> {
+  const failures: string[] = [];
+  for (const endpoint of config.endpoints) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    try {
+      const request: Rpc = (method, params, requestSignal) => endpointRpc(endpoint, method, params, requestSignal);
+      return await readEngine(request, config, wallet, new URL(endpoint).host, signal);
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : 'Unknown RPC failure');
+    }
+  }
+  const reason = failures[failures.length - 1] || 'No provider responded';
+  throw new Error(`${config.protocol} is unavailable. Last response: ${reason}`);
+}
+
 export default function DeFiSwarmPanel() {
   const [wallet, setWallet] = useState(DEFAULT_WALLET);
   const [running, setRunning] = useState(true);
@@ -209,12 +295,16 @@ export default function DeFiSwarmPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [engineSnapshots, setEngineSnapshots] = useState<Record<string, EngineSnapshot>>({});
+  const [engineErrors, setEngineErrors] = useState<Record<string, string>>({});
+  const [engineLoading, setEngineLoading] = useState(false);
   const [expanded, setExpanded] = useState<string | null>('Aave V3');
   const providerRef = useRef<WalletProvider | null>(null);
 
   const stop = useCallback(() => {
     setRunning(false);
     setLoading(false);
+    setEngineLoading(false);
     setError('');
   }, []);
 
@@ -286,9 +376,54 @@ export default function DeFiSwarmPanel() {
     };
   }, [running, wallet, refresh]);
 
+  useEffect(() => {
+    if (!running) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | undefined;
+
+    const pollEngines = async () => {
+      controller = new AbortController();
+      setEngineLoading(true);
+      const configs = protocolCards.slice(1);
+      const results = await Promise.allSettled(
+        configs.map(config => readEngineWithFailover(config, validateWallet(wallet), controller!.signal)),
+      );
+      if (!disposed) {
+        const successes: Record<string, EngineSnapshot> = {};
+        const failures: Record<string, string> = {};
+        results.forEach((result, index) => {
+          const protocol = configs[index].protocol;
+          if (result.status === 'fulfilled') successes[protocol] = result.value;
+          else if (!(result.reason instanceof DOMException) || result.reason.name !== 'AbortError') {
+            failures[protocol] = result.reason instanceof Error ? result.reason.message : `${protocol} check failed.`;
+          }
+        });
+        setEngineSnapshots(previous => ({ ...previous, ...successes }));
+        setEngineErrors(failures);
+        setEngineLoading(false);
+        timer = setTimeout(() => void pollEngines(), POLL_INTERVAL_MS);
+      }
+    };
+
+    void pollEngines();
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+      controller?.abort();
+    };
+  }, [running, wallet, refresh]);
+
   const fresh = snapshot !== null && Date.now() - snapshot.blockTime <= 180_000;
   const healthy = running && fresh && !error;
-  const status = healthy ? 'ON-CHAIN MONITORING' : loading ? 'CONNECTING' : error ? 'DEGRADED' : running ? 'RETRYING' : 'PAUSED';
+  const genericLiveCount = protocolCards.slice(1).filter(card => {
+    const engine = engineSnapshots[card.protocol];
+    return running && engine && Date.now() - engine.blockTime <= 300_000 && !engineErrors[card.protocol];
+  }).length;
+  const liveCount = (healthy ? 1 : 0) + genericLiveCount;
+  const allHealthy = liveCount === protocolCards.length;
+  const checking = loading || engineLoading;
+  const status = allHealthy ? 'ALL SWARMS LIVE' : checking ? `CONNECTING ${liveCount}/${protocolCards.length}` : running ? `${liveCount}/${protocolCards.length} SWARMS LIVE` : 'PAUSED';
   const explorer = `https://polygonscan.com/address/${addressPattern.test(wallet.trim()) ? wallet.trim() : DEFAULT_WALLET}`;
   const stats = [
     { label: 'POL balance', value: snapshot?.nativeBalance ?? '—', icon: Wallet },
@@ -296,7 +431,7 @@ export default function DeFiSwarmPanel() {
     { label: 'Debt', value: snapshot ? `${snapshot.debt} ${snapshot.currency}` : '—', icon: Activity },
     { label: 'Health factor', value: snapshot?.health ?? '—', icon: HeartPulse },
     { label: 'Verified block', value: snapshot?.block ?? '—', icon: Network },
-    { label: 'Live monitors', value: healthy ? '1' : '0', icon: Bot },
+    { label: 'Live monitors', value: `${liveCount}/${protocolCards.length}`, icon: Bot },
   ];
 
   return (
@@ -304,7 +439,7 @@ export default function DeFiSwarmPanel() {
       <div className="flex flex-wrap items-center gap-3">
         <Network className="h-5 w-5 text-cyan-400" />
         <h2 className="text-lg font-bold text-zinc-100">DeFi Swarm Intelligence</h2>
-        <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${healthy ? 'bg-emerald-500/15 text-emerald-400' : error ? 'bg-red-500/15 text-red-300' : 'bg-amber-500/15 text-amber-300'}`}>
+        <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${allHealthy ? 'bg-emerald-500/15 text-emerald-400' : liveCount > 0 ? 'bg-amber-500/15 text-amber-300' : 'bg-red-500/15 text-red-300'}`}>
           {status}
         </span>
         <a href={explorer} target="_blank" rel="noopener noreferrer" className="ml-auto flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-200">
@@ -326,14 +461,15 @@ export default function DeFiSwarmPanel() {
           <button onClick={() => void connectWallet()} className="rounded-lg bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700">
             <Wallet className="mr-2 inline h-4 w-4" />Connect wallet
           </button>
-          <button disabled={loading} onClick={run} className="rounded-lg bg-cyan-600 px-3 py-2 text-sm text-white hover:bg-cyan-500 disabled:opacity-50">
-            {loading ? <RefreshCw className="mr-2 inline h-4 w-4 animate-spin" /> : <Play className="mr-2 inline h-4 w-4" />}Run checks
+          <button disabled={checking} onClick={run} className="rounded-lg bg-cyan-600 px-3 py-2 text-sm text-white hover:bg-cyan-500 disabled:opacity-50">
+            {checking ? <RefreshCw className="mr-2 inline h-4 w-4 animate-spin" /> : <Play className="mr-2 inline h-4 w-4" />}Run all engines
           </button>
           {running && <button onClick={stop} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"><Square className="mr-2 inline h-4 w-4" />Pause</button>}
         </div>
-        <p className="text-xs text-zinc-500">Connected read-only to <span className="font-mono text-cyan-400">{wallet}</span> on Polygon Aave V3. It verifies the chain, block freshness, current pool contract, wallet balance, collateral, debt, and health factor every 30 seconds. No private key is requested.</p>
-        {snapshot && <p role="status" className="text-xs text-cyan-400">Verified at {new Date(snapshot.checkedAt).toLocaleTimeString()} via {snapshot.source} · pool {snapshot.pool.slice(0, 8)}…{snapshot.pool.slice(-6)}</p>}
+        <p className="text-xs text-zinc-500">Connected read-only to <span className="font-mono text-cyan-400">{wallet}</span>. Every 30 seconds the swarm verifies fresh blocks, canonical protocol contracts, and wallet balances across Polygon, Arbitrum, Ethereum, Optimism, and Base. Aave also verifies collateral, debt, and health factor. No private key is requested.</p>
+        {snapshot && <p role="status" className="text-xs text-cyan-400">{liveCount}/{protocolCards.length} engines verified · Aave checked at {new Date(snapshot.checkedAt).toLocaleTimeString()} via {snapshot.source} · pool {snapshot.pool.slice(0, 8)}…{snapshot.pool.slice(-6)}</p>}
         {error && <div role="alert" className="flex items-start justify-between gap-3 rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-sm text-red-300"><span>{error}{snapshot ? ' Showing the last verified snapshot.' : ''}</span><button onClick={run} className="flex-shrink-0 text-xs font-bold text-red-200 underline">Retry</button></div>}
+        {Object.keys(engineErrors).length > 0 && <div role="alert" className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-300">{Object.entries(engineErrors).map(([protocol, message]) => <p key={protocol}><span className="font-bold">{protocol}:</span> {message}</p>)}</div>}
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -343,15 +479,24 @@ export default function DeFiSwarmPanel() {
       <div className="space-y-3">
         {protocolCards.map(card => {
           const open = expanded === card.protocol;
+          const isAave = card.protocol === 'Aave V3';
+          const engine = engineSnapshots[card.protocol];
+          const cardLive = isAave
+            ? healthy
+            : Boolean(running && engine && Date.now() - engine.blockTime <= 300_000 && !engineErrors[card.protocol]);
+          const cardStatus = cardLive ? 'VERIFIED LIVE' : checking ? 'CONNECTING' : engineErrors[card.protocol] ? 'UNAVAILABLE' : 'READY';
+          const cardValue = isAave && snapshot
+            ? `${snapshot.collateral} ${snapshot.currency}`
+            : engine ? `${engine.nativeBalance} ${card.nativeSymbol}` : '—';
           return <div key={card.protocol} className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/60">
             <button aria-expanded={open} onClick={() => setExpanded(open ? null : card.protocol)} className="flex w-full items-center gap-4 p-5 text-left">
               {open ? <ChevronDown className="h-4 w-4 text-zinc-500" /> : <ChevronRight className="h-4 w-4 text-zinc-500" />}
               <span className="text-2xl">{card.icon}</span>
               <div className="flex-1"><h3 className="text-sm font-bold text-zinc-200">{card.name}</h3><p className="text-[10px] text-zinc-500">{card.chain} · {card.faction} · {card.protocol}</p></div>
-              <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${card.connected ? healthy ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-300' : 'bg-zinc-800 text-zinc-500'}`}>{card.connected ? healthy ? 'VERIFIED LIVE' : 'READY' : 'NOT CONNECTED'}</span>
-              <div className="hidden text-right sm:block"><p className="text-[9px] text-zinc-500">COLLATERAL</p><p className="font-mono text-sm text-zinc-200">{card.connected && snapshot ? `${snapshot.collateral} ${snapshot.currency}` : '—'}</p></div>
+              <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${cardLive ? 'bg-emerald-500/15 text-emerald-400' : engineErrors[card.protocol] ? 'bg-red-500/15 text-red-300' : 'bg-amber-500/15 text-amber-300'}`}>{cardStatus}</span>
+              <div className="hidden text-right sm:block"><p className="text-[9px] text-zinc-500">{isAave ? 'COLLATERAL' : `${card.nativeSymbol} BALANCE`}</p><p className="font-mono text-sm text-zinc-200">{cardValue}</p></div>
             </button>
-            {open && <div className="space-y-3 border-t border-zinc-800 p-5 text-xs text-zinc-400">{card.connected ? <><p>This adapter reads the canonical Aave provider and resolves the current Pool and Price Oracle at the same verified block as the wallet snapshot.</p><div className="grid grid-cols-1 gap-4 sm:grid-cols-3"><div>Wallet POL<p className="mt-1 font-mono text-zinc-200">{snapshot?.nativeBalance ?? '—'}</p></div><div>Debt<p className="mt-1 font-mono text-zinc-200">{snapshot ? `${snapshot.debt} ${snapshot.currency}` : '—'}</p></div><div>Health factor<p className="mt-1 font-mono text-zinc-200">{snapshot?.health ?? '—'}</p></div></div>{snapshot && <p className="break-all text-zinc-500">Pool: {snapshot.pool} · Block: {snapshot.block}</p>}</> : <p>No verified adapter is configured for {card.protocol}. This panel deliberately does not display seeded TVL, yield, APY, or agent activity as if it were live data.</p>}</div>}
+            {open && <div className="space-y-3 border-t border-zinc-800 p-5 text-xs text-zinc-400">{isAave ? <><p>This engine resolves the current Aave Pool and Price Oracle from the canonical provider at the same verified block as the wallet snapshot.</p><div className="grid grid-cols-1 gap-4 sm:grid-cols-3"><div>Wallet POL<p className="mt-1 font-mono text-zinc-200">{snapshot?.nativeBalance ?? '—'}</p></div><div>Debt<p className="mt-1 font-mono text-zinc-200">{snapshot ? `${snapshot.debt} ${snapshot.currency}` : '—'}</p></div><div>Health factor<p className="mt-1 font-mono text-zinc-200">{snapshot?.health ?? '—'}</p></div></div>{snapshot && <p className="break-all text-zinc-500">Pool: {snapshot.pool} · Block: {snapshot.block} · RPC: {snapshot.source}</p>}</> : <><p>This engine verifies the {card.protocol} {card.contractLabel} bytecode, a fresh {card.chain} block, and the connected wallet balance.</p><div className="grid grid-cols-1 gap-4 sm:grid-cols-3"><div>Wallet {card.nativeSymbol}<p className="mt-1 font-mono text-zinc-200">{engine?.nativeBalance ?? '—'}</p></div><div>Verified block<p className="mt-1 font-mono text-zinc-200">{engine?.block ?? '—'}</p></div><div>RPC source<p className="mt-1 font-mono text-zinc-200">{engine?.source ?? '—'}</p></div></div><p className="break-all text-zinc-500">{card.contractLabel}: {card.contract}</p>{engineErrors[card.protocol] && <p className="text-red-300">{engineErrors[card.protocol]}</p>}</>}</div>}
           </div>;
         })}
       </div>
