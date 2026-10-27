@@ -1,6 +1,4 @@
-import { useState } from 'react';
 import { Gauge, TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import { setSentiment } from '@/lib/engine';
 import type { Sentiment } from '@/lib/types';
 
 interface Props {
@@ -8,19 +6,7 @@ interface Props {
 }
 
 export default function SentimentOverride({ sentiment }: Props) {
-  const [loading, setLoading] = useState(false);
-  const [selected, setSelected] = useState<'bullish' | 'bearish' | 'neutral'>(
-    sentiment?.mode ?? 'neutral'
-  );
-
-  const handleEngage = async () => {
-    setLoading(true);
-    try {
-      await setSentiment(selected);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const selected = sentiment?.mode ?? 'neutral';
 
   const modes = [
     { value: 'bullish' as const, label: 'Bullish', icon: TrendingUp, color: 'emerald' },
@@ -58,9 +44,8 @@ export default function SentimentOverride({ sentiment }: Props) {
             const Icon = m.icon;
             const isSelected = selected === m.value;
             return (
-              <button
+              <div
                 key={m.value}
-                onClick={() => setSelected(m.value)}
                 className={`flex flex-col items-center gap-1.5 rounded-lg border p-3 text-xs font-medium transition-all ${
                   isSelected
                     ? m.color === 'emerald'
@@ -73,18 +58,14 @@ export default function SentimentOverride({ sentiment }: Props) {
               >
                 <Icon className="h-4 w-4" />
                 {m.label}
-              </button>
+              </div>
             );
           })}
         </div>
 
-        <button
-          onClick={handleEngage}
-          disabled={loading}
-          className="w-full rounded-lg bg-purple-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-purple-500 disabled:opacity-50"
-        >
-          {loading ? 'Engaging...' : 'Engage Override'}
-        </button>
+        <div className="w-full rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-center text-sm font-semibold text-emerald-300">
+          {sentiment ? `${sentiment.label} engaged` : 'Loading operator sentiment…'}
+        </div>
 
         <p className="mt-3 text-[11px] leading-relaxed text-zinc-600">
           Bullish boosts all factions 1.3x except Inspectah Deck (0.5x hedge). 

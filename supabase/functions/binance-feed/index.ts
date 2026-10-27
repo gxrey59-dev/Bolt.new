@@ -1188,6 +1188,34 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // ─── GET /dashboard-data ──────────────────────────────────────
+    // Read-only operator telemetry for the public command center. The browser
+    // never receives a secret database key and all independent reads run in
+    // parallel to keep the dashboard responsive.
+    if (path === "/dashboard-data") {
+      const [factions, signals, sweeps, breakers, sentiment, audit] = await Promise.all([
+        supabase.from("factions").select("*").order("name"),
+        supabase.from("signals").select("*").order("created_at", { ascending: false }).limit(50),
+        supabase.from("sweeps").select("*").order("created_at", { ascending: false }).limit(20),
+        supabase.from("circuit_breakers").select("*").order("created_at", { ascending: false }).limit(20),
+        supabase.from("sentiment").select("*").eq("active", true).order("created_at", { ascending: false }).limit(1),
+        supabase.from("audit_log").select("*").order("created_at", { ascending: false }).limit(50),
+      ]);
+      const failed = [factions, signals, sweeps, breakers, sentiment, audit].find((result) => result.error);
+      if (failed?.error) throw new Error(`Dashboard data unavailable: ${failed.error.message}`);
+      return new Response(JSON.stringify({
+        factions: factions.data ?? [],
+        signals: signals.data ?? [],
+        sweeps: sweeps.data ?? [],
+        breakers: breakers.data ?? [],
+        sentiment: sentiment.data?.[0] ?? null,
+        audit: audit.data ?? [],
+        refreshedAt: new Date().toISOString(),
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
     // ─── POST /kill-switch ────────────────────────────────────────
     if (path === "/kill-switch") {
       const body = await req.json().catch(() => ({}));

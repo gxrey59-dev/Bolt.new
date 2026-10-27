@@ -21,7 +21,7 @@ const RevenueCommandCenter = lazy(() => import('@/components/RevenueCommandCente
 const RevenueSprintDashboard = lazy(() => import('@/components/RevenueSprintDashboard'));
 
 const DATABASE_TABS = new Set<TabId>(['command', 'dashboard', 'table', 'operations']);
-const HAS_DATABASE_ACCESS = import.meta.env.VITE_SUPABASE_ANON_KEY !== 'public-edge-functions-only';
+const DASHBOARD_DATA_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/binance-feed/dashboard-data`;
 
 const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'sprint', label: '24h Sprint', icon: Flame },
@@ -43,28 +43,39 @@ export default function App() {
   const [breakers, setBreakers] = useState<CircuitBreaker[]>([]);
   const [sentiment, setSentiment] = useState<Sentiment | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [dataError, setDataError] = useState('');
 
   const fetchAll = useCallback(async () => {
-    if (!HAS_DATABASE_ACCESS || !DATABASE_TABS.has(tab)) return;
-    const { supabase } = await import('@/lib/supabase');
-    const [fRes, sRes, swRes, bRes, seRes, aRes] = await Promise.all([
-      supabase.from('factions').select('*').order('name'),
-      supabase.from('signals').select('*').order('created_at', { ascending: false }).limit(50),
-      supabase.from('sweeps').select('*').order('created_at', { ascending: false }).limit(20),
-      supabase.from('circuit_breakers').select('*').order('created_at', { ascending: false }).limit(20),
-      supabase.from('sentiment').select('*').eq('active', true).limit(1),
-      supabase.from('audit_log').select('*').order('created_at', { ascending: false }).limit(50),
-    ]);
-
-    if (fRes.data) setFactions(fRes.data);
-    if (sRes.data) setSignals(sRes.data);
-    if (swRes.data) setSweeps(swRes.data);
-    if (bRes.data) setBreakers(bRes.data);
-    setSentiment(seRes.data?.[0] ?? null);
-    if (aRes.data) setAudit(aRes.data);
+    if (!DATABASE_TABS.has(tab)) return;
+    const response = await fetch(DASHBOARD_DATA_URL, {
+      headers: {
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+      },
+    });
+    if (!response.ok) throw new Error(`Dashboard connection returned HTTP ${response.status}.`);
+    const data = await response.json() as {
+      factions: Faction[]; signals: Signal[]; sweeps: Sweep[];
+      breakers: CircuitBreaker[]; sentiment: Sentiment | null; audit: AuditEntry[];
+    };
+    setFactions(data.factions);
+    setSignals(data.signals);
+    setSweeps(data.sweeps);
+    setBreakers(data.breakers);
+    setSentiment(data.sentiment);
+    setAudit(data.audit);
+    setDataError('');
   }, [tab]);
 
-  useVisibilityPolling(fetchAll, 10_000, HAS_DATABASE_ACCESS && DATABASE_TABS.has(tab));
+  const refreshDashboard = useCallback(async () => {
+    try {
+      await fetchAll();
+    } catch (error) {
+      setDataError(error instanceof Error ? error.message : 'Dashboard data is unavailable.');
+    }
+  }, [fetchAll]);
+
+  useVisibilityPolling(refreshDashboard, 10_000, DATABASE_TABS.has(tab));
 
   return (
     <div className="min-h-screen bg-zinc-950">
@@ -94,6 +105,11 @@ export default function App() {
       </nav>
 
       <main className="mx-auto max-w-[1600px] px-6 py-6">
+        {dataError && DATABASE_TABS.has(tab) ? (
+          <div role="alert" className="mb-5 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            {dataError}
+          </div>
+        ) : null}
         <Suspense fallback={<div className="py-24 text-center text-sm text-zinc-500">Loading workspace…</div>}>
         <div className="space-y-8 animate-fade-in">
           {tab === 'sprint' && (
