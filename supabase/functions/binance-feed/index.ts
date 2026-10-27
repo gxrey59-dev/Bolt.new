@@ -240,7 +240,7 @@ function calculateVolumeSMA(candles: Candle[], period: number = 20): number {
 // Minimum confluence score of 3 factors required to enter a trade.
 // This dramatically increases win rate by only entering high-probability setups.
 
-const MIN_CONFLUENCE = 3.0;
+const MIN_CONFLUENCE = 3.5;
 
 interface ConfluenceFactor {
   name: string;
@@ -558,7 +558,7 @@ async function getStrategyWinRates(): Promise<Map<string, { winRate: number; tot
     if (!stats.has(key)) stats.set(key, { wins: 0, total: 0 });
     const s = stats.get(key)!;
     s.total++;
-    if (Number(t.pnl) >= 0) s.wins++;
+    if (Number(t.pnl) > 0) s.wins++;
   }
   const result = new Map<string, { winRate: number; totalTrades: number }>();
   for (const [key, s] of stats) {
@@ -655,28 +655,14 @@ async function executeTrade(
   }
   if (balance < 5) return { tradeId: null, reasoning: `Insufficient balance: ${balance.toFixed(2)}`, error: null };
 
-  // For live trades: subtract value of already-open positions from available balance
-  let availableBalance = balance;
-  if (isLive) {
-    const { data: openTrades } = await supabase
-      .from("paper_trades")
-      .select("position_value, remaining_quantity, quantity")
-      .eq("status", "open")
-      .eq("is_live", true);
-    if (openTrades) {
-      const deployed = openTrades.reduce((sum, t) => {
-        const remaining = Number(t.remaining_quantity ?? t.quantity) / Number(t.quantity);
-        return sum + Number(t.position_value) * remaining;
-      }, 0);
-      availableBalance = Math.max(0, balance - deployed);
-    }
-  }
-  const minNotional = 5.5; // Binance requires $5 min order + buffer
+  // Binance's free USDT already excludes funds locked in existing orders and positions.
+  // Subtracting database positions here would double-count deployed capital and suppress valid entries.
+  const availableBalance = balance;
+  const minNotional = 5.5;
   if (availableBalance < minNotional) return { tradeId: null, reasoning: `Insufficient available balance: ${availableBalance.toFixed(2)} (min ${minNotional})`, error: null };
 
   const positionValue = Math.min(availableBalance * (config.maxPositionPct / 100), availableBalance * 0.8);
-  // Skip if position value below Binance MIN_NOTIONAL
-  if (isLive && positionValue < minNotional) return { tradeId: null, reasoning: `Position value ${positionValue.toFixed(2)} below Binance min ${minNotional}`, error: null };
+  if (isLive && positionValue < minNotional) return { tradeId: null, reasoning: `Position value ${positionValue.toFixed(2)} below exchange minimum`, error: null };
   let quantity = positionValue / currentPrice;
 
   // For live trades: round to valid LOT_SIZE step
@@ -685,6 +671,10 @@ async function executeTrade(
     const f = filters.get(symbol);
     if (f) {
       quantity = roundToStep(quantity, f.stepSize);
+      const exchangeMinNotional = Math.max(minNotional, f.minNotional);
+      if (quantity <= 0 || quantity * currentPrice < exchangeMinNotional) {
+        return { tradeId: null, reasoning: `Rounded order value ${(quantity * currentPrice).toFixed(2)} below exchange minimum ${exchangeMinNotional.toFixed(2)}`, error: null };
+      }
     }
   }
 
@@ -1174,6 +1164,8 @@ Deno.serve(async (req: Request) => {
       const currentPrices = new Map<string, number>();
       const priceDataMap = new Map<string, PriceData>();
       const tradesOpened: string[] = [];
+      const liveTickers = await fetchTickers(TRADING_PAIRS);
+      const liveTickerMap = new Map(liveTickers.map((ticker) => [ticker.symbol, ticker]));
 
       const candleResults = await Promise.all(
         TRADING_PAIRS.map(async (symbol) => {
@@ -1187,12 +1179,16 @@ Deno.serve(async (req: Request) => {
       );
 
       for (const { symbol, candles, error } of candleResults) {
-        if (error || candles.length < 50) continue;
-        const currentPrice = candles[candles.length - 1].close;
+        if (error || candles.length < 51) continue;
+        const lastCandle = candles[candles.length - 1];
+        const analysisCandles = lastCandle.closeTime > Date.now() ? candles.slice(0, -1) : candles;
+        if (analysisCandles.length < 50) continue;
+        const ticker = liveTickerMap.get(symbol);
+        const currentPrice = ticker?.price ?? analysisCandles[analysisCandles.length - 1].close;
         currentPrices.set(symbol, currentPrice);
-        priceDataMap.set(symbol, { close: currentPrice, high: candles[candles.length - 1].high, low: candles[candles.length - 1].low });
+        priceDataMap.set(symbol, { close: currentPrice, high: ticker?.high ?? currentPrice, low: ticker?.low ?? currentPrice });
 
-        const signal = evaluateStrategies(candles, currentPrice, {
+        const signal = evaluateStrategies(analysisCandles, currentPrice, {
           rsiOversold: config.rsiOversold,
           rsiOverbought: config.rsiOverbought,
           macdThreshold: config.macdThreshold,
@@ -1300,8 +1296,8 @@ Deno.serve(async (req: Request) => {
             price_change_pct: candles[candles.length - 1].close > candles[candles.length - 2].close
               ? ((candles[candles.length - 1].close / candles[candles.length - 2].close - 1) * 100) : 0,
             volume: candles[candles.length - 1].volume,
-            high_24h: Math.max(...candles.slice(-24).map((c) => c.high)),
-            low_24h: Math.min(...candles.slice(-24).map((c) => c.low)),
+            high_24h: ticker?.high ?? Math.max(...analysisCandles.slice(-24).map((c) => c.high)),
+            low_24h: ticker?.low ?? Math.min(...analysisCandles.slice(-24).map((c) => c.low)),
             rsi_14: signal.indicators.rsi, macd_line: signal.indicators.macdLine,
             macd_signal: signal.indicators.macdSignal, macd_histogram: signal.indicators.macdHistogram,
             ema_12: signal.indicators.ema12, ema_26: signal.indicators.ema26,

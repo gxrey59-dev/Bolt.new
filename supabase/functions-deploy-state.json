@@ -1,0 +1,21 @@
+{
+  "projectId": "69749419",
+  "functions": {
+    "backtest-engine": {
+      "hasChanged": false,
+      "hash": "d20370007e364d10ecddc3bf68e8c93d07b72a4edbc4ca6e6ac7187b595c7849"
+    },
+    "binance-feed": {
+      "hasChanged": false,
+      "hash": "7bd05fef5392dfa670986463c1d8ce0eb96eaf8271e00eaf6213b350e34a50d0"
+    },
+    "binance-withdraw": {
+      "hasChanged": false,
+      "hash": "aa264ef961273346a346f9050d1b8b4efdcf75103917426eda42514a09202317"
+    },
+    "get-config": {
+      "hasChanged": false,
+      "hash": "47b5e77867e5bab6dee78fc8a446e0d6a40c9d71a7fe6c7ea80a87ee930248b0"
+    }
+  }
+}

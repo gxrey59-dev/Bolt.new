@@ -17,7 +17,7 @@ interface RevenueStream {
   target_value: number;
   unit: string;
   growth_rate: number;
-  months_to_target: int;
+  months_to_target: number;
   billion_share: number;
   status: string;
   blockers: string;
