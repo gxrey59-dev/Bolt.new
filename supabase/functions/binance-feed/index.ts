@@ -1216,6 +1216,31 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // ─── GET /sprint-data ─────────────────────────────────────────
+    // Current UTC-day activity plus any position that is still open, including
+    // positions carried in from the previous day.
+    if (path === "/sprint-data") {
+      const windowStart = new Date();
+      windowStart.setUTCHours(0, 0, 0, 0);
+      const windowEnd = new Date(windowStart.getTime() + 86_400_000);
+      const isoStart = windowStart.toISOString();
+      const { data, error } = await supabase
+        .from("paper_trades")
+        .select("id,faction_id,symbol,side,strategy,entry_price,exit_price,pnl,status,opened_at,closed_at,is_live,binance_order_id,binance_close_order_id,execution_error")
+        .or(`status.eq.open,opened_at.gte.${isoStart},closed_at.gte.${isoStart}`)
+        .order("opened_at", { ascending: false })
+        .limit(100);
+      if (error) throw new Error(`Sprint data unavailable: ${error.message}`);
+      return new Response(JSON.stringify({
+        trades: data ?? [],
+        windowStart: isoStart,
+        windowEnd: windowEnd.toISOString(),
+        refreshedAt: new Date().toISOString(),
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
     // ─── POST /kill-switch ────────────────────────────────────────
     if (path === "/kill-switch") {
       const body = await req.json().catch(() => ({}));

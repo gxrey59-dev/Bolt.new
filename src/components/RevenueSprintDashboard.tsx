@@ -3,8 +3,9 @@ import {
   Flame, TrendingUp, TrendingDown, Zap, Clock,
   DollarSign, Activity, ArrowUp, ArrowDown, Trophy, Rocket,
 } from 'lucide-react';
-import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
+
+const SPRINT_DATA_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/binance-feed/sprint-data`;
 
 interface Trade {
   id: string;
@@ -50,27 +51,30 @@ function timeRemaining(): { hours: number; minutes: number; seconds: number; pct
 export default function RevenueSprintDashboard() {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [countdown, setCountdown] = useState(timeRemaining());
 
   const fetchTrades = useCallback(async () => {
-    if (!hasDatabaseAccess) {
+    try {
+      const response = await fetch(SPRINT_DATA_URL, {
+        headers: {
+          apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        },
+      });
+      if (!response.ok) throw new Error(`Sprint connection returned HTTP ${response.status}.`);
+      const data = await response.json() as { trades: Trade[] };
+      setTrades(data.trades);
+      setError('');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Sprint data is unavailable.');
+    } finally {
       setLoading(false);
-      return;
     }
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const { data } = await supabase
-      .from('paper_trades')
-      .select('*')
-      .or(`opened_at.gte.${today.toISOString()},closed_at.gte.${today.toISOString()}`)
-      .order('opened_at', { ascending: false })
-      .limit(100);
-    setTrades((data ?? []) as Trade[]);
-    setLoading(false);
   }, []);
   const updateCountdown = useCallback(() => setCountdown(timeRemaining()), []);
 
-  useVisibilityPolling(fetchTrades, 5_000, hasDatabaseAccess);
+  useVisibilityPolling(fetchTrades, 5_000);
   useVisibilityPolling(updateCountdown, 1_000);
 
   const closed = trades.filter(t => t.status === 'closed');
@@ -106,6 +110,7 @@ export default function RevenueSprintDashboard() {
     if (Number(t.pnl) > 0) factionMap[t.faction_id].wins++;
   }
   const factionRanking = Object.entries(factionMap).sort((a, b) => b[1].pnl - a[1].pnl);
+  const maxFactionPnl = Math.max(0, ...factionRanking.map(([, data]) => Math.abs(data.pnl)));
 
   // Per-symbol breakdown
   const symbolMap: Record<string, { pnl: number; trades: number; wins: number }> = {};
@@ -116,6 +121,7 @@ export default function RevenueSprintDashboard() {
     if (Number(t.pnl) > 0) symbolMap[t.symbol].wins++;
   }
   const symbolRanking = Object.entries(symbolMap).sort((a, b) => b[1].pnl - a[1].pnl).slice(0, 8);
+  const maxSymbolPnl = Math.max(0, ...symbolRanking.map(([, data]) => Math.abs(data.pnl)));
 
   return (
     <section className="space-y-5">
@@ -131,8 +137,8 @@ export default function RevenueSprintDashboard() {
               <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-400 animate-pulse">LIVE</span>
             </div>
             <p className="text-sm text-zinc-400">
-              Maximum aggression mode. Tighter stops, bigger positions, faster exits.
-              Every dollar tracked in real-time.
+              Current UTC-day trading performance with open positions and realized results.
+              Live safety controls remain active.
             </p>
           </div>
 
@@ -164,6 +170,12 @@ export default function RevenueSprintDashboard() {
           </div>
         </div>
       </div>
+
+      {error ? (
+        <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          {error}
+        </div>
+      ) : null}
 
       {/* Core P&L Stats */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -239,7 +251,7 @@ export default function RevenueSprintDashboard() {
                   <div className="flex-1 h-2 rounded-full bg-zinc-800 overflow-hidden">
                     <div
                       className={`h-2 rounded-full transition-all ${data.pnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}
-                      style={{ width: `${Math.min(Math.abs(data.pnl) / Math.max(...factionRanking.map(([, d]) => Math.abs(d.pnl))) * 100, 100)}%` }}
+                      style={{ width: `${maxFactionPnl > 0 ? Math.min(Math.abs(data.pnl) / maxFactionPnl * 100, 100) : 0}%` }}
                     />
                   </div>
                   <span className={`font-mono text-xs font-bold tabular-nums flex-shrink-0 w-20 text-right ${data.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -268,7 +280,7 @@ export default function RevenueSprintDashboard() {
                   <div className="flex-1 h-2 rounded-full bg-zinc-800 overflow-hidden">
                     <div
                       className={`h-2 rounded-full transition-all ${data.pnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}
-                      style={{ width: `${Math.min(Math.abs(data.pnl) / Math.max(...symbolRanking.map(([, d]) => Math.abs(d.pnl))) * 100, 100)}%` }}
+                      style={{ width: `${maxSymbolPnl > 0 ? Math.min(Math.abs(data.pnl) / maxSymbolPnl * 100, 100) : 0}%` }}
                     />
                   </div>
                   <span className={`font-mono text-xs font-bold tabular-nums flex-shrink-0 w-20 text-right ${data.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
