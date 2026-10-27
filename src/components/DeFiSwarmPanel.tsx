@@ -13,6 +13,7 @@ import {
   Square,
   Wallet,
 } from 'lucide-react';
+import SolanaOpportunityMonitor from '@/components/SolanaOpportunityMonitor';
 
 const DEFAULT_WALLET = '0xb4d70fcFE953b9a563DD96Ee59D17082Db253098';
 const AAVE_PROVIDER = '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb';
@@ -475,6 +476,8 @@ export default function DeFiSwarmPanel() {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {stats.map(stat => <div key={stat.label} className="rounded-xl border border-zinc-800 bg-gradient-to-br from-zinc-900/80 to-zinc-950/80 p-4"><div className="mb-1.5 flex items-center gap-1.5"><stat.icon className="h-3.5 w-3.5 text-cyan-400" /><p className="text-[10px] uppercase tracking-wider text-zinc-500">{stat.label}</p></div><p className="break-all font-mono text-xl font-bold text-zinc-100">{stat.value}</p></div>)}
       </div>
+
+      <SolanaOpportunityMonitor />
 
       <div className="space-y-3">
         {protocolCards.map(card => {
