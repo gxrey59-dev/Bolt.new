@@ -131,10 +131,57 @@ interface FullConfig {
   dailyLossResetAt: string | null;
 }
 
-function pickFaction(symbol: string): string {
+interface FactionRow {
+  id: string;
+  status: string;
+  paper_balance: number;
+  open_positions: number | null;
+  paused_until: string | null;
+  cooldown_until: string | null;
+}
+
+const eligibleFactionCache: { ids: string[]; expires: number } = { ids: [], expires: 0 };
+
+async function refreshEligibleFactions(): Promise<string[]> {
+  const now = Date.now();
+  if (eligibleFactionCache.ids.length > 0 && now < eligibleFactionCache.expires) {
+    return eligibleFactionCache.ids;
+  }
+  const { data, error } = await supabase
+    .from("factions")
+    .select("id, status, paper_balance, open_positions, paused_until, cooldown_until");
+  if (error || !data) return FACTION_IDS;
+  const nowIso = new Date().toISOString();
+  const eligible: string[] = [];
+  for (const f of data as FactionRow[]) {
+    if (f.status === "halted") continue;
+    if (f.paused_until && f.paused_until > nowIso) continue;
+    if (f.cooldown_until && f.cooldown_until > nowIso) continue;
+    if (Number(f.paper_balance) < 5) continue;
+    if ((f.open_positions ?? 0) >= 3) continue;
+    eligible.push(f.id);
+    if (f.status === "paused" && (!f.paused_until || f.paused_until <= nowIso)) {
+      await supabase.from("factions").update({ status: "active", paused_until: null }).eq("id", f.id);
+    }
+    if (f.status === "cooldown" && (!f.cooldown_until || f.cooldown_until <= nowIso)) {
+      await supabase.from("factions").update({ status: "active", cooldown_until: null }).eq("id", f.id);
+    }
+  }
+  eligibleFactionCache.ids = eligible;
+  eligibleFactionCache.expires = now + 15000;
+  return eligible;
+}
+
+function hashSymbol(symbol: string, pool: string[]): string {
   let hash = 0;
   for (let i = 0; i < symbol.length; i++) hash = (hash * 31 + symbol.charCodeAt(i)) | 0;
-  return FACTION_IDS[Math.abs(hash) % FACTION_IDS.length];
+  return pool[Math.abs(hash) % pool.length];
+}
+
+async function pickFaction(symbol: string): Promise<string> {
+  const eligible = await refreshEligibleFactions();
+  const pool = eligible.length > 0 ? eligible : FACTION_IDS;
+  return hashSymbol(symbol, pool);
 }
 
 // ─── Technical Indicators ──────────────────────────────────────────
@@ -1182,7 +1229,7 @@ Deno.serve(async (req: Request) => {
           // In live mode: only take long positions (spot exchange can't short)
           if (!config.paperMode && signal.side === "short") {
             signals.push({
-              symbol, faction: pickFaction(symbol), strategy: signal.strategy, side: signal.side,
+              symbol, faction: await pickFaction(symbol), strategy: signal.strategy, side: signal.side,
               reasoning: signal.reasoning + " [skipped: live mode long-only]", price: currentPrice, strength: signal.strength,
               tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
             });
@@ -1191,14 +1238,14 @@ Deno.serve(async (req: Request) => {
           // Block MACD-labeled signals — historically negative P&L strategy
           if (signal.strategy === "macd_crossover") {
             signals.push({
-              symbol, faction: pickFaction(symbol), strategy: signal.strategy, side: signal.side,
+              symbol, faction: await pickFaction(symbol), strategy: signal.strategy, side: signal.side,
               reasoning: signal.reasoning + " [skipped: macd_crossover blocked]", price: currentPrice, strength: signal.strength,
               tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
             });
             continue;
           }
 
-          const factionId = pickFaction(symbol);
+          const factionId = await pickFaction(symbol);
           const strategyStats = strategyWinRates.get(signal.strategy);
           const skippedByWinRate = strategyStats && strategyStats.totalTrades >= 5 && strategyStats.winRate < config.minWinRateThreshold;
 
