@@ -21,8 +21,6 @@ type Snapshot = {
   health: string | null;
   currency: string;
 };
-type WalletProvider = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> };
-
 interface SwarmRow {
   id: string;
   name: string;
@@ -40,7 +38,7 @@ interface SwarmRow {
   risk_level: string;
   gas_efficiency: number;
   rebalance_count: number;
-  wallet_address: string;
+  wallet_address: string | null;
 }
 
 interface AgentRow {
@@ -58,7 +56,7 @@ interface AgentRow {
   last_action: string;
   last_action_at: string | null;
   action_count: number;
-  wallet_address: string;
+  wallet_address: string | null;
 }
 
 function quantity(value: unknown): bigint {
@@ -101,7 +99,7 @@ async function readSnapshot(request: Rpc, wallet: string, signal: AbortSignal): 
   if (!wallet) return result;
   const oracle = decodeAddress(await call(PROVIDER, '0xfca513a8'));
   const [account, balance, unit, base] = await Promise.all([
-    call(pool, '0xbf92857c' + wallet.slice(2).padStart(64, '0')),
+    call(pool, '0xbf92857c' + wallet.slice(2).toLowerCase().padStart(64, '0')),
     request('eth_getBalance', [wallet, block], signal),
     call(oracle, '0x8c89b64f'), call(oracle, '0xe19f4700'),
   ]);
@@ -125,24 +123,30 @@ const PROTOCOL_META: Record<string, { icon: string; chain: string; faction: stri
 };
 
 export default function DeFiSwarmPanel() {
-  const [wallet, setWallet] = useState(CONNECTED_WALLET);
+  const [wallet] = useState(CONNECTED_WALLET);
   const [running, setRunning] = useState(true);
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [expanded, setExpanded] = useState<string | null>('aave_v3');
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [swarms, setSwarms] = useState<SwarmRow[]>([]);
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [dbLoading, setDbLoading] = useState(true);
+  const [dbError, setDbError] = useState('');
 
   const fetchDbData = useCallback(async () => {
-    const [{ data: s }, { data: a }] = await Promise.all([
+    const [{ data: s, error: swarmError }, { data: a, error: agentError }] = await Promise.all([
       supabase.from('defi_swarms').select('*').order('total_tvl', { ascending: false }),
       supabase.from('defi_swarm_agents').select('*').order('yield_24h', { ascending: false }),
     ]);
-    setSwarms((s ?? []) as SwarmRow[]);
-    setAgents((a ?? []) as AgentRow[]);
+    if (swarmError || agentError) {
+      setDbError('Swarm data is temporarily unavailable.');
+    } else {
+      setSwarms((s ?? []) as SwarmRow[]);
+      setAgents((a ?? []) as AgentRow[]);
+      setDbError('');
+    }
     setDbLoading(false);
   }, []);
 
@@ -180,9 +184,12 @@ export default function DeFiSwarmPanel() {
 
   function stop() { setRunning(false); setSnapshot(null); setLoading(false); setError(''); }
 
-  const healthy = running && snapshot !== null && !error;
-  const connectedSwarm = swarms.find(s => s.wallet_address === CONNECTED_WALLET);
-  const connectedAgents = agents.filter(a => a.swarm_id === connectedSwarm?.id);
+  const healthy = running && snapshot !== null && !error && Date.now() - snapshot.blockTime <= 60000;
+  const connectedSwarm = swarms.find(s => s.wallet_address?.toLowerCase() === CONNECTED_WALLET.toLowerCase());
+
+  useEffect(() => {
+    if (expanded === null && connectedSwarm) setExpanded(connectedSwarm.id);
+  }, [connectedSwarm, expanded]);
 
   const totalTvl = swarms.reduce((s, w) => s + Number(w.total_tvl), 0);
   const totalYield24h = swarms.reduce((s, w) => s + Number(w.total_yield_24h), 0);
@@ -273,13 +280,16 @@ export default function DeFiSwarmPanel() {
         <div className="flex h-32 items-center justify-center">
           <RefreshCw className="h-5 w-5 animate-spin text-zinc-700" />
         </div>
+      ) : dbError ? (
+        <div role="alert" className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-300">{dbError}</div>
       ) : (
         <div className="space-y-3">
           {swarms.map(swarm => {
-            const meta = PROTOCOL_META[swarm.protocol] ?? { icon: '🤖', chain: swarm.chain, faction: swarm.faction_id };
+            const protocolMeta = PROTOCOL_META[swarm.protocol];
+            const meta = { icon: protocolMeta?.icon ?? '•', chain: swarm.chain, faction: swarm.faction_id };
             const swarmAgents = agents.filter(a => a.swarm_id === swarm.id);
             const isExpanded = expanded === swarm.id;
-            const isLive = swarm.wallet_address === CONNECTED_WALLET;
+            const isLive = swarm.wallet_address?.toLowerCase() === CONNECTED_WALLET.toLowerCase();
             return (
               <div key={swarm.id} className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/60">
                 <button aria-expanded={isExpanded} onClick={() => setExpanded(isExpanded ? null : swarm.id)} className="flex w-full items-center gap-4 p-5 text-left">
