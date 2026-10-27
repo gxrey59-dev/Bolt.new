@@ -203,7 +203,7 @@ async function readWithFailover(wallet: string, signal: AbortSignal, provider: W
 }
 
 export default function DeFiSwarmPanel() {
-  const [wallet, setWallet] = useState(() => localStorage.getItem('defi-monitor-wallet') || DEFAULT_WALLET);
+  const [wallet, setWallet] = useState(DEFAULT_WALLET);
   const [running, setRunning] = useState(true);
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -331,7 +331,7 @@ export default function DeFiSwarmPanel() {
           </button>
           {running && <button onClick={stop} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"><Square className="mr-2 inline h-4 w-4" />Pause</button>}
         </div>
-        <p className="text-xs text-zinc-500">Read-only Aave V3 monitoring on Polygon. It verifies the chain, block freshness, current pool contract, wallet balance, collateral, debt, and health factor every 30 seconds. No private key is requested.</p>
+        <p className="text-xs text-zinc-500">Connected read-only to <span className="font-mono text-cyan-400">{wallet}</span> on Polygon Aave V3. It verifies the chain, block freshness, current pool contract, wallet balance, collateral, debt, and health factor every 30 seconds. No private key is requested.</p>
         {snapshot && <p role="status" className="text-xs text-cyan-400">Verified at {new Date(snapshot.checkedAt).toLocaleTimeString()} via {snapshot.source} · pool {snapshot.pool.slice(0, 8)}…{snapshot.pool.slice(-6)}</p>}
         {error && <div role="alert" className="flex items-start justify-between gap-3 rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-sm text-red-300"><span>{error}{snapshot ? ' Showing the last verified snapshot.' : ''}</span><button onClick={run} className="flex-shrink-0 text-xs font-bold text-red-200 underline">Retry</button></div>}
       </div>
