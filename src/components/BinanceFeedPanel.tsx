@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { Coins, RefreshCw, Brain } from 'lucide-react';
 import { fetchLivePrices, runStrategyScan } from '@/lib/engine';
+import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 
 interface TickerData {
   symbol: string;
@@ -18,7 +19,7 @@ export default function BinanceFeedPanel() {
   const [scanResult, setScanResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchPrices = async () => {
+  const fetchPrices = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -29,7 +30,7 @@ export default function BinanceFeedPanel() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   const runScan = async () => {
     setScanning(true);
@@ -46,11 +47,7 @@ export default function BinanceFeedPanel() {
     }
   };
 
-  useEffect(() => {
-    fetchPrices();
-    const id = setInterval(fetchPrices, 10000);
-    return () => clearInterval(id);
-  }, []);
+  useVisibilityPolling(fetchPrices, 10_000);
 
   return (
     <section>

@@ -1,23 +1,27 @@
-import { useState, useEffect, useCallback } from 'react';
+import { lazy, Suspense, useState, useCallback } from 'react';
 import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
 import Header from '@/components/Header';
-import FactionGrid from '@/components/FactionGrid';
-import SignalFeed from '@/components/SignalFeed';
-import AuditFeed from '@/components/AuditFeed';
-import DashboardView from '@/components/DashboardView';
-import SentimentOverride from '@/components/SentimentOverride';
-import TableView from '@/components/TableView';
-import CREAMSweepPanel from '@/components/CREAMSweepPanel';
-import RevenueSweepPanel from '@/components/RevenueSweepPanel';
-import BinanceFeedPanel from '@/components/BinanceFeedPanel';
-import CircuitBreakerPanel from '@/components/CircuitBreakerPanel';
-import LiveTradingDashboard from '@/components/LiveTradingDashboard';
-import NFTCollection from '@/components/NFTCollection';
-import DeFiSwarmPanel from '@/components/DeFiSwarmPanel';
-import RevenueCommandCenter from '@/components/RevenueCommandCenter';
-import RevenueSprintDashboard from '@/components/RevenueSprintDashboard';
+
+const FactionGrid = lazy(() => import('@/components/FactionGrid'));
+const SignalFeed = lazy(() => import('@/components/SignalFeed'));
+const AuditFeed = lazy(() => import('@/components/AuditFeed'));
+const DashboardView = lazy(() => import('@/components/DashboardView'));
+const SentimentOverride = lazy(() => import('@/components/SentimentOverride'));
+const TableView = lazy(() => import('@/components/TableView'));
+const CREAMSweepPanel = lazy(() => import('@/components/CREAMSweepPanel'));
+const RevenueSweepPanel = lazy(() => import('@/components/RevenueSweepPanel'));
+const BinanceFeedPanel = lazy(() => import('@/components/BinanceFeedPanel'));
+const CircuitBreakerPanel = lazy(() => import('@/components/CircuitBreakerPanel'));
+const LiveTradingDashboard = lazy(() => import('@/components/LiveTradingDashboard'));
+const NFTCollection = lazy(() => import('@/components/NFTCollection'));
+const DeFiSwarmPanel = lazy(() => import('@/components/DeFiSwarmPanel'));
+const RevenueCommandCenter = lazy(() => import('@/components/RevenueCommandCenter'));
+const RevenueSprintDashboard = lazy(() => import('@/components/RevenueSprintDashboard'));
+
+const DATABASE_TABS = new Set<TabId>(['command', 'dashboard', 'table', 'operations']);
+const HAS_DATABASE_ACCESS = import.meta.env.VITE_SUPABASE_ANON_KEY !== 'public-edge-functions-only';
 
 const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'sprint', label: '24h Sprint', icon: Flame },
@@ -41,6 +45,8 @@ export default function App() {
   const [audit, setAudit] = useState<AuditEntry[]>([]);
 
   const fetchAll = useCallback(async () => {
+    if (!HAS_DATABASE_ACCESS || !DATABASE_TABS.has(tab)) return;
+    const { supabase } = await import('@/lib/supabase');
     const [fRes, sRes, swRes, bRes, seRes, aRes] = await Promise.all([
       supabase.from('factions').select('*').order('name'),
       supabase.from('signals').select('*').order('created_at', { ascending: false }).limit(50),
@@ -56,16 +62,9 @@ export default function App() {
     if (bRes.data) setBreakers(bRes.data);
     setSentiment(seRes.data?.[0] ?? null);
     if (aRes.data) setAudit(aRes.data);
-  }, []);
+  }, [tab]);
 
-  useEffect(() => {
-    fetchAll();
-    const pollId = setInterval(fetchAll, 2000);
-
-    return () => {
-      clearInterval(pollId);
-    };
-  }, [fetchAll]);
+  useVisibilityPolling(fetchAll, 10_000, HAS_DATABASE_ACCESS && DATABASE_TABS.has(tab));
 
   return (
     <div className="min-h-screen bg-zinc-950">
@@ -95,6 +94,7 @@ export default function App() {
       </nav>
 
       <main className="mx-auto max-w-[1600px] px-6 py-6">
+        <Suspense fallback={<div className="py-24 text-center text-sm text-zinc-500">Loading workspace…</div>}>
         <div className="space-y-8 animate-fade-in">
           {tab === 'sprint' && (
             <RevenueSprintDashboard />
@@ -157,11 +157,12 @@ export default function App() {
             <RevenueCommandCenter />
           )}
         </div>
+        </Suspense>
       </main>
 
       <footer className="border-t border-zinc-800/50 bg-zinc-950 py-4">
         <div className="mx-auto flex max-w-[1600px] items-center justify-between px-6 text-[11px] text-zinc-600">
-          <span>Dashboard refresh: 2s</span>
+          <span>Smart refresh: visible tabs only</span>
           <span>Exchange data and on-chain monitoring</span>
         </div>
       </footer>

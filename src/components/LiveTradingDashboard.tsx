@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   TrendingUp, TrendingDown, Activity, DollarSign, Zap, Target,
   Shield, Clock, BarChart3, Percent, ArrowUpRight, ArrowDownRight,
   Radio, AlertTriangle, ChevronRight,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { hasDatabaseAccess, supabase } from '@/lib/supabase';
+import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import { FACTIONS, TRADING_PAIRS } from '@/lib/constants';
 import { fetchOpenPositions, closeAllPositions, runStrategyScan } from '@/lib/engine';
 import type { OpenPosition, PaperTrade } from '@/lib/types';
@@ -101,7 +102,9 @@ export default function LiveTradingDashboard() {
   const fetchData = useCallback(async () => {
     const [pos, hist, cfg, pr] = await Promise.all([
       fetchOpenPositions(),
-      supabase.from('paper_trades').select('*').eq('status', 'closed').order('closed_at', { ascending: false }).limit(100),
+      hasDatabaseAccess
+        ? supabase.from('paper_trades').select('*').eq('status', 'closed').order('closed_at', { ascending: false }).limit(100)
+        : Promise.resolve({ data: [] as PaperTrade[] }),
       fetchConfig(),
       fetchLivePrices(),
     ]);
@@ -137,11 +140,7 @@ export default function LiveTradingDashboard() {
     setEquityCurve(points);
   }, []);
 
-  useEffect(() => {
-    fetchData();
-    const id = setInterval(fetchData, 4000);
-    return () => clearInterval(id);
-  }, [fetchData]);
+  useVisibilityPolling(fetchData, 4_000);
 
   const isLive = config?.paperMode === false;
   const killActive = config?.killSwitch === true;

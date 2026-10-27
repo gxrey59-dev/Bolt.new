@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   DollarSign, TrendingUp, Target, Rocket, AlertCircle,
   ArrowRight, Zap, Crown, Building2, Coins, Code, Users,
   RefreshCw, ChevronRight, Flame,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { hasDatabaseAccess, supabase } from '@/lib/supabase';
+import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 
 interface RevenueStream {
   id: string;
@@ -70,12 +71,16 @@ export default function RevenueCommandCenter() {
   const [selected, setSelected] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
+    if (!hasDatabaseAccess) {
+      setLoading(false);
+      return;
+    }
     const { data } = await supabase.from('revenue_streams').select('*').order('target_revenue', { ascending: false });
     setStreams((data ?? []) as RevenueStream[]);
     setLoading(false);
   }, []);
 
-  useEffect(() => { fetchData(); const id = setInterval(fetchData, 5000); return () => clearInterval(id); }, [fetchData]);
+  useVisibilityPolling(fetchData, 10_000, hasDatabaseAccess);
 
   const totalCurrentMonthly = streams.reduce((s, r) => s + Number(r.current_revenue), 0);
   const totalTargetMonthly = streams.reduce((s, r) => s + Number(r.target_revenue), 0);

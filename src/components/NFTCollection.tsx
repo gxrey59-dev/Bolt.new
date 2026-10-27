@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Gem, Sparkles, Flame, Check, Loader2, Share2, Download, X, TrendingUp, Copy, ExternalLink } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { FACTIONS } from '@/lib/constants';
 
 interface NFTCard {
@@ -39,6 +39,11 @@ export default function NFTCollection() {
 
   const fetchNFTs = useCallback(async () => {
     setLoading(true);
+    if (!hasDatabaseAccess) {
+      setLoadError('Collection data requires a Supabase publishable key.');
+      setLoading(false);
+      return;
+    }
     try {
       const { data, error } = await supabase.from('nft_collection').select('*').order('power', { ascending: false }).abortSignal(AbortSignal.timeout(10000));
       if (error) throw new Error(error.message);

@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   Flame, TrendingUp, TrendingDown, Zap, Clock,
   DollarSign, Activity, ArrowUp, ArrowDown, Trophy, Rocket,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { hasDatabaseAccess, supabase } from '@/lib/supabase';
+import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 
 interface Trade {
   id: string;
@@ -52,6 +53,10 @@ export default function RevenueSprintDashboard() {
   const [countdown, setCountdown] = useState(timeRemaining());
 
   const fetchTrades = useCallback(async () => {
+    if (!hasDatabaseAccess) {
+      setLoading(false);
+      return;
+    }
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
     const { data } = await supabase
@@ -63,13 +68,10 @@ export default function RevenueSprintDashboard() {
     setTrades((data ?? []) as Trade[]);
     setLoading(false);
   }, []);
+  const updateCountdown = useCallback(() => setCountdown(timeRemaining()), []);
 
-  useEffect(() => {
-    fetchTrades();
-    const tradeId = setInterval(fetchTrades, 3000);
-    const clockId = setInterval(() => setCountdown(timeRemaining()), 1000);
-    return () => { clearInterval(tradeId); clearInterval(clockId); };
-  }, [fetchTrades]);
+  useVisibilityPolling(fetchTrades, 5_000, hasDatabaseAccess);
+  useVisibilityPolling(updateCountdown, 1_000);
 
   const closed = trades.filter(t => t.status === 'closed');
   const open = trades.filter(t => t.status === 'open');
