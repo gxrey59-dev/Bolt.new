@@ -715,7 +715,7 @@ async function executeTrade(
   // ATR-based stop loss — use the larger of configured SL or 1.5x ATR to avoid noise stops
   const atr = signal.indicators.atr;
   const atrPctOfPrice = atr > 0 ? (atr / currentPrice) * 100 : config.stopLossPct;
-  // Use configured SL, but never tighter than 1.5x ATR (prevents whipsaw stops on noisy 1m candles)
+  // Use configured SL, but never tighter than 1.5x ATR (prevents noise-driven exits)
   const effectiveStopPct = Math.max(config.stopLossPct, Math.min(atrPctOfPrice * 1.5, 5.0));
   // Take profit at 3x the stop distance — let winners run for bigger gains
   const effectiveTpPct = Math.max(config.takeProfitPct, effectiveStopPct * 3);
@@ -777,7 +777,35 @@ async function executeTrade(
     },
   }).select().single();
 
-  if (error) return { tradeId: null, reasoning: `Insert failed: ${error.message}`, error: error.message };
+  if (error) {
+    // A live buy already succeeded. Immediately flatten it if persistence fails so
+    // the exchange can never hold an untracked position.
+    let compensationError: string | null = null;
+    let compensationOrderId: string | null = null;
+    if (isLive && binanceOrderId) {
+      const compensation = await placeBinanceOrder(symbol, isLong ? "SELL" : "BUY", quantity, true);
+      compensationError = compensation.error;
+      compensationOrderId = compensation.orderId;
+    }
+    await supabase.from("audit_log").insert({
+      event_type: "live_trade_persistence_failed",
+      entity_type: "paper_trades",
+      entity_id: "system",
+      message: `LIVE TRADE PERSISTENCE FAILED: ${symbol} — ${error.message}`,
+      metadata: {
+        symbol, quantity, entry_order_id: binanceOrderId,
+        compensation_order_id: compensationOrderId,
+        compensation_error: compensationError,
+      },
+    });
+    return {
+      tradeId: null,
+      reasoning: compensationError
+        ? `Insert failed and emergency flatten failed: ${compensationError}`
+        : `Insert failed; live order was flattened: ${error.message}`,
+      error: compensationError ?? error.message,
+    };
+  }
 
   if (!isLive) {
     await supabase.from("factions").update({
@@ -880,20 +908,18 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
     let closeReason = "";
     let isPartialClose = false;
 
-    // Minimum hold: don't close trades opened less than 15 minutes ago (prevents churn)
-    const minutesOpen = hoursOpen * 60;
-
     // Time-based exit: close after 48 hours regardless
     if (hoursOpen >= 48) {
       shouldClose = true;
       closeReason = `Time exit (${hoursOpen.toFixed(0)}h open)`;
     }
-    // Trailing / breakeven stop — only check after 15 min minimum hold
-    else if (minutesOpen >= 15 && isLong && intrabarLow <= stop) {
+    // Hard and trailing stops are always active. Delaying a live stop can turn a
+    // bounded loss into an unbounded one during the first minutes of a trade.
+    else if (isLong && intrabarLow <= stop) {
       shouldClose = true;
       const exitPrice = Math.min(currentPrice, stop);
       closeReason = profitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
-    } else if (minutesOpen >= 15 && !isLong && intrabarHigh >= stop) {
+    } else if (!isLong && intrabarHigh >= stop) {
       shouldClose = true;
       const exitPrice = Math.max(currentPrice, stop);
       closeReason = profitPct >= 1 ? `Trailing stop at ${exitPrice.toFixed(4)} (peak: ${newPeak.toFixed(4)})` : `Stop loss hit at ${exitPrice.toFixed(4)}`;
@@ -932,10 +958,30 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
         const partialPnl = isLong ? (target - entry) * partialQty : (entry - target) * partialQty;
 
         let partialOrderId: string | null = null;
-        if (isLive && trade.binance_order_id) {
+        if (isLive) {
+          if (!trade.binance_order_id) {
+            const executionError = "Live partial close blocked: entry order ID is missing";
+            await supabase.from("paper_trades").update({ execution_error: executionError }).eq("id", trade.id);
+            await supabase.from("audit_log").insert({
+              event_type: "live_close_failed", entity_type: "paper_trades", entity_id: trade.id,
+              message: `LIVE PARTIAL CLOSE FAILED: ${trade.symbol} — ${executionError}`,
+              metadata: { symbol: trade.symbol, quantity: partialQty, error: executionError },
+            });
+            continue;
+          }
           const closeSide = isLong ? "SELL" : "BUY";
           const partialResult = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", partialQty, true);
           partialOrderId = partialResult.orderId;
+          if (partialResult.error || !partialOrderId) {
+            const executionError = partialResult.error ?? "Exchange returned no partial-close order ID";
+            await supabase.from("paper_trades").update({ execution_error: executionError }).eq("id", trade.id);
+            await supabase.from("audit_log").insert({
+              event_type: "live_close_failed", entity_type: "paper_trades", entity_id: trade.id,
+              message: `LIVE PARTIAL CLOSE FAILED: ${trade.symbol} — ${executionError}`,
+              metadata: { symbol: trade.symbol, quantity: partialQty, error: executionError },
+            });
+            continue;
+          }
         }
 
         await supabase.from("paper_trades").update({
@@ -943,6 +989,7 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
           partial_exit_at: new Date().toISOString(),
           partial_exit_pnl: partialPnl,
           remaining_quantity: newRemainingQty,
+          execution_error: null,
         }).eq("id", trade.id);
 
         // Credit partial profit to faction balance
@@ -986,10 +1033,30 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
         const totalPnl = pnl + partialPnl;
 
         let closeOrderId: string | null = null;
-        if (isLive && trade.binance_order_id) {
+        if (isLive) {
+          if (!trade.binance_order_id) {
+            const executionError = "Live close blocked: entry order ID is missing";
+            await supabase.from("paper_trades").update({ execution_error: executionError }).eq("id", trade.id);
+            await supabase.from("audit_log").insert({
+              event_type: "live_close_failed", entity_type: "paper_trades", entity_id: trade.id,
+              message: `LIVE CLOSE FAILED: ${trade.symbol} — ${executionError}`,
+              metadata: { symbol: trade.symbol, quantity, error: executionError },
+            });
+            continue;
+          }
           const closeSide = isLong ? "SELL" : "BUY";
           const closeResult = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", quantity, true);
           closeOrderId = closeResult.orderId;
+          if (closeResult.error || !closeOrderId) {
+            const executionError = closeResult.error ?? "Exchange returned no close order ID";
+            await supabase.from("paper_trades").update({ execution_error: executionError }).eq("id", trade.id);
+            await supabase.from("audit_log").insert({
+              event_type: "live_close_failed", entity_type: "paper_trades", entity_id: trade.id,
+              message: `LIVE CLOSE FAILED: ${trade.symbol} — ${executionError}`,
+              metadata: { symbol: trade.symbol, quantity, error: executionError },
+            });
+            continue;
+          }
         }
 
         await supabase.from("paper_trades").update({
@@ -998,6 +1065,7 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
           pnl: totalPnl,
           closed_at: new Date().toISOString(),
           binance_close_order_id: closeOrderId,
+          execution_error: null,
         }).eq("id", trade.id);
 
         const { data: faction } = await supabase
@@ -1215,7 +1283,9 @@ Deno.serve(async (req: Request) => {
         const ticker = liveTickerMap.get(symbol);
         const currentPrice = ticker?.price ?? analysisCandles[analysisCandles.length - 1].close;
         currentPrices.set(symbol, currentPrice);
-        priceDataMap.set(symbol, { close: currentPrice, high: ticker?.high ?? currentPrice, low: ticker?.low ?? currentPrice });
+        // The ticker high/low covers the previous 24 hours and can predate a
+        // newly opened trade. Never use it to trigger this trade's TP/SL.
+        priceDataMap.set(symbol, { close: currentPrice, high: currentPrice, low: currentPrice });
 
         const signal = evaluateStrategies(analysisCandles, currentPrice, {
           rsiOversold: config.rsiOversold,
