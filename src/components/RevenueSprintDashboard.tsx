@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Flame, TrendingUp, TrendingDown, Zap, Target, Clock,
+  Flame, TrendingUp, TrendingDown, Zap, Clock,
   DollarSign, Activity, ArrowUp, ArrowDown, Trophy, Rocket,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';

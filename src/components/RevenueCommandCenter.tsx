@@ -80,7 +80,6 @@ export default function RevenueCommandCenter() {
   const totalCurrentMonthly = streams.reduce((s, r) => s + Number(r.current_revenue), 0);
   const totalTargetMonthly = streams.reduce((s, r) => s + Number(r.target_revenue), 0);
   const totalTargetAnnual = totalTargetMonthly * 12;
-  const progressPct = totalTargetMonthly > 0 ? (totalCurrentMonthly / totalTargetMonthly) * 100 : 0;
   const billionProgress = totalTargetAnnual > 0 ? (totalCurrentMonthly * 12 / BILLION) * 100 : 0;
   const liveStreams = streams.filter(s => s.status === 'live' || s.status === 'scaling').length;
   const conceptStreams = streams.filter(s => s.status === 'conceptual' || s.status === 'planned').length;

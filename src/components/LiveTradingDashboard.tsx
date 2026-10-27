@@ -95,7 +95,7 @@ export default function LiveTradingDashboard() {
   const [confirmClose, setConfirmClose] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
   const [togglingKill, setTogglingKill] = useState(false);
-  const [lastScan, setLastScan] = useState<Date | null>(null);
+  const [, setLastScan] = useState<Date | null>(null);
   const equityRef = useRef<EquityPoint[]>([]);
 
   const fetchData = useCallback(async () => {

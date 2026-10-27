@@ -6,7 +6,6 @@ import type { Collection, CollectionRoute } from '@/lib/types';
 export default function RevenueSweepPanel() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [routes, setRoutes] = useState<CollectionRoute[]>([]);
-  const [sending, setSending] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const [usdtBalance, setUsdtBalance] = useState<number | null>(null);
   const [nonUsdtBalances, setNonUsdtBalances] = useState<{ coin: string; free: string }[]>([]);
@@ -104,7 +103,6 @@ export default function RevenueSweepPanel() {
   };
 
   const completedCount = collections.filter(w => w.status === 'completed').length;
-  const totalCollected = collections.filter(w => w.status === 'completed').reduce((sum, w) => sum + Number(w.amount), 0);
   const sellableCoins = nonUsdtBalances.filter(b => parseFloat(b.free) > 0);
 
   return (

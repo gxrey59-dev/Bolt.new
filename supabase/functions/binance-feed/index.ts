@@ -500,20 +500,6 @@ async function placeBinanceOrder(symbol: string, side: "BUY" | "SELL", quantity:
   return { orderId: String(data.orderId), error: null };
 }
 
-async function cancelBinanceOrder(symbol: string, orderId: string): Promise<boolean> {
-  if (!BINANCE_API_KEY || !BINANCE_SECRET_KEY) return false;
-  const params = new URLSearchParams({
-    symbol, orderId, recvWindow: "10000", timestamp: Date.now().toString(),
-  });
-  const signature = await hmacSha256(BINANCE_SECRET_KEY, params.toString());
-  params.set("signature", signature);
-  const res = await fetch(`${BINANCE_BASE}/api/v3/order?${params.toString()}`, {
-    method: "DELETE",
-    headers: { "X-MBX-APIKEY": BINANCE_API_KEY },
-  });
-  return res.ok;
-}
-
 // ─── Config ────────────────────────────────────────────────────────
 
 async function getStrategyConfig(): Promise<FullConfig> {
@@ -817,10 +803,6 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
     const profitPct = isLong
       ? ((currentPrice - entry) / entry) * 100
       : ((entry - currentPrice) / entry) * 100;
-    const peakProfitPct = isLong
-      ? ((newPeak - entry) / entry) * 100
-      : ((entry - newPeak) / entry) * 100;
-
     const hasPartialExit = trade.partial_exit_price !== null;
     const remainingQty = Number(trade.remaining_quantity ?? trade.quantity);
     // After partial exit: trail tighter (1.2%) to protect profits on the runner
@@ -1549,7 +1531,7 @@ Deno.serve(async (req: Request) => {
           const f = filters.get(symbol);
           if (!f) continue;
 
-          let qty = roundToStep(free, f.stepSize);
+          const qty = roundToStep(free, f.stepSize);
           if (qty < f.minQty) continue;
 
           const result = await placeBinanceOrder(symbol, "SELL", qty, true);

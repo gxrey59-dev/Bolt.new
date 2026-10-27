@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Coins, RefreshCw, Play, Brain } from 'lucide-react';
+import { Coins, RefreshCw, Brain } from 'lucide-react';
 import { fetchLivePrices, runStrategyScan } from '@/lib/engine';
 
 interface TickerData {

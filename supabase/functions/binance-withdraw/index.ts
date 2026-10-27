@@ -181,7 +181,7 @@ async function spotSell(coin: string, quantity: number): Promise<{ orderId: stri
   const f = filters.get(symbol);
   if (!f) return { orderId: null, error: `No trading pair ${symbol}`, proceeds: 0 };
 
-  let qty = roundToStep(quantity, f.stepSize);
+  const qty = roundToStep(quantity, f.stepSize);
   if (qty < f.minQty) return { orderId: null, error: `Quantity ${qty} below min ${f.minQty} for ${symbol}`, proceeds: 0 };
 
   let decimals = 6;
@@ -383,7 +383,6 @@ Deno.serve(async (req: Request) => {
       const usdtBefore = await getUsdtBalance();
 
       const sellResults: { coin: string; orderId: string | null; proceeds: number; error: string | null }[] = [];
-      let totalProceeds = 0;
       let totalErrors = 0;
 
       // Step 2: Sell each non-USDT coin to USDT via spot market order
@@ -411,7 +410,6 @@ Deno.serve(async (req: Request) => {
           error: result.error,
         });
         if (result.error) totalErrors++;
-        else totalProceeds += result.proceeds;
       }
 
       const usdtAfter = await getUsdtBalance();

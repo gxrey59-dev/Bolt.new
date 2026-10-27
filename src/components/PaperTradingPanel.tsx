@@ -87,7 +87,6 @@ export default function PaperTradingPanel() {
   }, [fetchData]);
 
   const totalUnrealizedPnl = positions.reduce((s, p) => s + p.unrealized_pnl, 0);
-  const totalPositionValue = positions.reduce((s, p) => s + Number(p.position_value), 0);
   const totalRealizedPnl = history.reduce((s, t) => s + Number(t.pnl), 0);
   const wins = history.filter(t => Number(t.pnl) >= 0).length;
   const losses = history.filter(t => Number(t.pnl) < 0).length;

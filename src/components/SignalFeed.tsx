@@ -1,4 +1,4 @@
-import { Radio, Brain, TrendingUp, TrendingDown } from 'lucide-react';
+import { Radio, Brain } from 'lucide-react';
 import { FACTIONS } from '@/lib/constants';
 import type { Signal } from '@/lib/types';
 
@@ -50,7 +50,6 @@ export default function SignalFeed({ signals }: Props) {
               const strategy = payload?.strategy as string | undefined;
               const reasoning = payload?.reasoning as string | undefined;
               const rsi = payload?.rsi as number | undefined;
-              const strength = payload?.strength as number | undefined;
               const isExecuted = s.status === 'executed';
 
               return (
