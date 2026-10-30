@@ -71,7 +71,7 @@ export default function PaperTradingPanel() {
     setLoading(true);
     const [pos, hist, cfg] = await Promise.all([
       fetchOpenPositions(),
-      supabase.from('paper_trades').select('*').eq('status', 'closed').order('closed_at', { ascending: false }).limit(20),
+      supabase.from('paper_trades').select('*').eq('is_live', true).eq('status', 'closed').order('closed_at', { ascending: false }).limit(20),
       fetchConfig(),
     ]);
     setPositions(pos);

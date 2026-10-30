@@ -103,7 +103,7 @@ export default function LiveTradingDashboard() {
     const [pos, hist, cfg, pr] = await Promise.all([
       fetchOpenPositions(),
       hasDatabaseAccess
-        ? supabase.from('paper_trades').select('*').eq('status', 'closed').order('closed_at', { ascending: false }).limit(100)
+        ? supabase.from('paper_trades').select('*').eq('is_live', true).eq('status', 'closed').order('closed_at', { ascending: false }).limit(100)
         : Promise.resolve({ data: [] as PaperTrade[] }),
       fetchConfig(),
       fetchLivePrices(),

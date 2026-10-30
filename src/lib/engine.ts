@@ -78,7 +78,7 @@ export async function fetchOpenPositions(): Promise<OpenPosition[]> {
     });
     if (!res.ok) return [];
     const data = await res.json();
-    return data.openPositions ?? [];
+    return (data.openPositions ?? []).filter((p: OpenPosition) => p.is_live === true);
   } catch {
     return [];
   }
