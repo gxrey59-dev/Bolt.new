@@ -327,6 +327,38 @@ Deno.serve(async (req: Request) => {
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    // ─── API key permissions + egress IP ─────────────────────────
+    if (path === "/permissions") {
+      const [restrict, egressIp] = await Promise.all([
+        binanceSignedCall("/api/v3/account", {}),
+        fetch("https://api.ipify.org")
+          .then((r) => r.text())
+          .then((t) => t.trim())
+          .catch(() => null),
+      ]);
+      if (!restrict.ok) {
+        return new Response(JSON.stringify({
+          ok: false,
+          status: restrict.status,
+          error: restrict.raw.slice(0, 300),
+          egressIp,
+          checkedAt: new Date().toISOString(),
+        }), {
+          status: restrict.status || 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const d = restrict.data as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        ok: true,
+        egressIp,
+        enableWithdrawals: d.canWithdraw ?? null,
+        enableSpotAndMarginTrading: d.canTrade ?? null,
+        enableReading: restrict.ok ? true : null,
+        checkedAt: new Date().toISOString(),
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
     // ─── Routes listing ──────────────────────────────────────────
     if (path === "/routes") {
       const withdrawalId = url.searchParams.get("withdrawalId");

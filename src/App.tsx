@@ -8,6 +8,7 @@ const FactionGrid = lazy(() => import('@/components/FactionGrid'));
 const SignalFeed = lazy(() => import('@/components/SignalFeed'));
 const AuditFeed = lazy(() => import('@/components/AuditFeed'));
 const WithdrawalErrorLog = lazy(() => import('@/components/WithdrawalErrorLog'));
+const BinanceKeyStatusBadge = lazy(() => import('@/components/BinanceKeyStatusBadge'));
 const DashboardView = lazy(() => import('@/components/DashboardView'));
 const SentimentOverride = lazy(() => import('@/components/SentimentOverride'));
 const TableView = lazy(() => import('@/components/TableView'));
@@ -153,6 +154,7 @@ export default function App() {
           {tab === 'operations' && (
             <>
               <BinanceFeedPanel />
+              <BinanceKeyStatusBadge />
               <WithdrawalErrorLog />
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <CircuitBreakerPanel breakers={breakers} factions={factions} />

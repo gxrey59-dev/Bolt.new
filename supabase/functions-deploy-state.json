@@ -7,11 +7,11 @@
     },
     "binance-feed": {
       "hasChanged": false,
-      "hash": "4ba784218effccbe9f182b58dc923334a5928fb0c586a11cc3ea90773638ab02"
+      "hash": "bdba08e14ccbcf58a0952ef1d09321efd5557f8e5abcd037a3ee8f2cee8239cc"
     },
     "binance-withdraw": {
       "hasChanged": false,
-      "hash": "bcde7e6c5008ca5f29c244a8385f62f3cc954af2c4dfed844fb9bc0a08b2b711"
+      "hash": "cf2b84ed16c559700ba03960e0f1ef917fd9d53b0c6a0f81a0152ef3f958db50"
     },
     "get-config": {
       "hasChanged": false,
