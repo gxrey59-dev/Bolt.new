@@ -16,6 +16,7 @@ interface Phase {
   timeline: string;
   icon: typeof Rocket;
   accent: string;
+  bar: string;
   glow: string;
   milestones: Milestone[];
 }
@@ -28,6 +29,7 @@ const PHASES: Phase[] = [
     timeline: '0–3 months',
     icon: Rocket,
     accent: 'text-emerald-400',
+    bar: 'bg-emerald-400',
     glow: 'from-emerald-500/15',
     milestones: [
       { label: 'Scale trading capital from $22 to $100K', done: false },
@@ -43,6 +45,7 @@ const PHASES: Phase[] = [
     timeline: '3–9 months',
     icon: TrendingUp,
     accent: 'text-cyan-400',
+    bar: 'bg-cyan-400',
     glow: 'from-cyan-500/15',
     milestones: [
       { label: 'Launch signal subscription SaaS (Stripe)', done: false },
@@ -58,6 +61,7 @@ const PHASES: Phase[] = [
     timeline: '9–18 months',
     icon: Building2,
     accent: 'text-amber-400',
+    bar: 'bg-amber-400',
     glow: 'from-amber-500/15',
     milestones: [
       { label: '10K+ SaaS subscribers at $50–100/mo', done: false },
@@ -72,8 +76,9 @@ const PHASES: Phase[] = [
     target: '$10M/mo',
     timeline: '18–36 months',
     icon: Globe,
-    accent: 'text-purple-400',
-    glow: 'from-purple-500/15',
+    accent: 'text-sky-400',
+    bar: 'bg-sky-400',
+    glow: 'from-sky-500/15',
     milestones: [
       { label: 'Launch faction DAO with governance token', done: false },
       { label: '$100M+ treasury AUM', done: false },
@@ -171,7 +176,7 @@ export default function BillionRoadmap() {
                 <div className="hidden sm:block flex-shrink-0 w-28">
                   <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
                     <div
-                      className={`h-1.5 rounded-full transition-all ${phase.accent.replace('text-', 'bg-')}`}
+                      className={`h-1.5 rounded-full transition-all ${phase.bar}`}
                       style={{ width: `${Math.max(progress, 2)}%` }}
                     />
                   </div>

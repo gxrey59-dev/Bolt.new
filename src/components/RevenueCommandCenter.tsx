@@ -69,15 +69,26 @@ export default function RevenueCommandCenter() {
   const [streams, setStreams] = useState<RevenueStream[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
+  const [error, setError] = useState('');
 
   const fetchData = useCallback(async () => {
     if (!hasDatabaseAccess) {
       setLoading(false);
       return;
     }
-    const { data } = await supabase.from('revenue_streams').select('*').order('target_revenue', { ascending: false });
-    setStreams((data ?? []) as RevenueStream[]);
-    setLoading(false);
+    try {
+      const { data, error: queryError } = await supabase
+        .from('revenue_streams')
+        .select('*')
+        .order('target_revenue', { ascending: false });
+      if (queryError) throw new Error(queryError.message);
+      setStreams((data ?? []) as RevenueStream[]);
+      setError('');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Revenue data is unavailable.');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useVisibilityPolling(fetchData, 10_000, hasDatabaseAccess);
@@ -182,6 +193,12 @@ export default function RevenueCommandCenter() {
           </p>
         </div>
       </div>
+
+      {error ? (
+        <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+          {error}
+        </div>
+      ) : null}
 
       {/* Revenue Stream Cards */}
       {loading ? (
@@ -306,48 +323,6 @@ export default function RevenueCommandCenter() {
         </div>
       )}
 
-      {/* Path to $1B Summary */}
-      <div className="rounded-2xl border border-zinc-800 bg-gradient-to-br from-zinc-900/90 to-zinc-950/90 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Rocket className="h-4 w-4 text-amber-400" />
-          <h3 className="text-sm font-bold text-zinc-100">The Path to $1,000,000,000</h3>
-        </div>
-
-        <div className="space-y-3">
-          {[
-            { phase: 'Phase 1', title: 'Prove the Engine', target: '$10K/mo', timeline: '0-3 months', items: ['Scale trading capital from $22 to $100K', 'Improve win rate from 33% to 55%+', 'Get first NFT mints (deploy on-chain)', 'Connect real DeFi wallets'] },
-            { phase: 'Phase 2', title: 'Productize', target: '$100K/mo', timeline: '3-9 months', items: ['Launch signal subscription SaaS (Stripe)', 'List NFTs on OpenSea/Magic Eden', 'Scale DeFi TVL to $1M+', 'Package strategies for licensing'] },
-            { phase: 'Phase 3', title: 'Scale & Distribute', target: '$1M/mo', timeline: '9-18 months', items: ['10K+ SaaS subscribers at $50-100/mo', 'NFT secondary market royalties', '$10M+ DeFi TVL across swarms', 'White-label strategy to 50+ funds'] },
-            { phase: 'Phase 4', title: 'Institutional & DAO', target: '$10M/mo', timeline: '18-36 months', items: ['Launch faction DAO with governance token', '$100M+ treasury AUM', 'Institutional trading desk', 'API platform for swarm intelligence'] },
-          ].map((p, i) => (
-            <div key={i} className="flex gap-3">
-              <div className="flex flex-col items-center flex-shrink-0">
-                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-500/15 text-[10px] font-bold text-amber-400">
-                  {i + 1}
-                </div>
-                {i < 3 && <div className="w-px flex-1 bg-zinc-800 mt-1" />}
-              </div>
-              <div className="flex-1 pb-3">
-                <div className="flex items-center gap-2 flex-wrap mb-1">
-                  <span className="text-[10px] font-bold text-amber-400">{p.phase}</span>
-                  <h4 className="text-xs font-bold text-zinc-200">{p.title}</h4>
-                  <span className="text-[10px] text-zinc-600">·</span>
-                  <span className="text-[10px] text-emerald-400 font-mono">{p.target}</span>
-                  <span className="text-[10px] text-zinc-600">·</span>
-                  <span className="text-[10px] text-zinc-500">{p.timeline}</span>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {p.items.map((item, j) => (
-                    <span key={j} className="rounded-md bg-zinc-800/50 px-2 py-0.5 text-[9px] text-zinc-400">
-                      {item}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
     </section>
   );
 }
