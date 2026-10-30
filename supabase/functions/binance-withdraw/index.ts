@@ -12,8 +12,8 @@ const supabase = createClient(
 );
 
 const BINANCE_BASE = "https://api.binance.us";
-const BINANCE_API_KEY = Deno.env.get("BINANCE_API_KEY_2")?.trim() ?? "";
-const BINANCE_SECRET_KEY = Deno.env.get("BINANCE_SECRET_KEY_2")?.trim() ?? "";
+const BINANCE_API_KEY = Deno.env.get("BINANCE_API_KEY_3")?.trim() ?? "";
+const BINANCE_SECRET_KEY = Deno.env.get("BINANCE_SECRET_KEY_3")?.trim() ?? "";
 
 async function hmacSha256(key: string, message: string): Promise<string> {
   const enc = new TextEncoder();
