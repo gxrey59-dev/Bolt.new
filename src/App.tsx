@@ -7,6 +7,7 @@ import Header from '@/components/Header';
 const FactionGrid = lazy(() => import('@/components/FactionGrid'));
 const SignalFeed = lazy(() => import('@/components/SignalFeed'));
 const AuditFeed = lazy(() => import('@/components/AuditFeed'));
+const WithdrawalErrorLog = lazy(() => import('@/components/WithdrawalErrorLog'));
 const DashboardView = lazy(() => import('@/components/DashboardView'));
 const SentimentOverride = lazy(() => import('@/components/SentimentOverride'));
 const TableView = lazy(() => import('@/components/TableView'));
@@ -152,6 +153,7 @@ export default function App() {
           {tab === 'operations' && (
             <>
               <BinanceFeedPanel />
+              <WithdrawalErrorLog />
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <CircuitBreakerPanel breakers={breakers} factions={factions} />
                 <SentimentOverride sentiment={sentiment} />

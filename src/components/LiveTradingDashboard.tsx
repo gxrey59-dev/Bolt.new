@@ -97,6 +97,7 @@ export default function LiveTradingDashboard() {
   const [confirmKill, setConfirmKill] = useState(false);
   const [togglingKill, setTogglingKill] = useState(false);
   const [, setLastScan] = useState<Date | null>(null);
+  const [factionFilter, setFactionFilter] = useState<string>('all');
   const equityRef = useRef<EquityPoint[]>([]);
 
   const fetchData = useCallback(async () => {
@@ -208,6 +209,8 @@ export default function LiveTradingDashboard() {
 
   // Sort positions by P&L
   const sortedPositions = [...positions].sort((a, b) => b.unrealized_pnl - a.unrealized_pnl);
+  const visiblePositions = factionFilter === 'all' ? sortedPositions : sortedPositions.filter(p => p.faction_id === factionFilter);
+  const visibleHistory = factionFilter === 'all' ? history : history.filter(t => t.faction_id === factionFilter);
 
   // Top movers from price data
   const topMovers = [...prices].sort((a, b) => Math.abs(b.change) - Math.abs(a.change)).slice(0, 6);
@@ -437,21 +440,44 @@ export default function LiveTradingDashboard() {
         </div>
       </div>
 
+      {/* Faction Filter */}
+      <div className="flex flex-wrap gap-1.5">
+        {[{ id: 'all', name: 'All Factions' }, ...FACTIONS.map(f => ({ id: f.id, name: f.name }))].map(opt => {
+          const active = factionFilter === opt.id;
+          const count = opt.id === 'all' ? positions.length : positions.filter(p => p.faction_id === opt.id).length;
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => setFactionFilter(opt.id)}
+              className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                active
+                  ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300'
+                  : 'border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
+              }`}
+            >
+              {opt.name} <span className="font-mono tabular-nums opacity-70">{count}</span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Open Positions — Premium Layout */}
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
         <div className="mb-4 flex items-center gap-2">
           <Zap className="h-4 w-4 text-cyan-400" />
           <h3 className="text-sm font-semibold text-zinc-300">Active Positions</h3>
-          <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] font-bold text-zinc-400">{positions.length}</span>
+          <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] font-bold text-zinc-400">{visiblePositions.length}</span>
         </div>
 
-        {positions.length === 0 ? (
+        {visiblePositions.length === 0 ? (
           <div className="py-8 text-center">
             <p className="text-xs text-zinc-600">No open positions. The bot will open trades automatically on the next scan.</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {sortedPositions.map(p => {
+            {visiblePositions.map(p => {
               const meta = FACTIONS.find(f => f.id === p.faction_id);
               const isLong = p.side === 'long';
               const pnlPositive = p.unrealized_pnl >= 0;
@@ -603,11 +629,11 @@ export default function LiveTradingDashboard() {
             <Clock className="h-4 w-4 text-zinc-500" />
             <h3 className="text-sm font-semibold text-zinc-300">Recent Trades</h3>
           </div>
-          {history.length === 0 ? (
+          {visibleHistory.length === 0 ? (
             <p className="py-4 text-center text-xs text-zinc-600">No closed trades yet</p>
           ) : (
             <div className="space-y-1 max-h-64 overflow-y-auto">
-              {history.slice(0, 20).map(t => {
+              {visibleHistory.slice(0, 20).map(t => {
                 const isWin = Number(t.pnl) >= 0;
                 const pnl = Number(t.pnl);
                 const liveTrade = (t as PaperTrade & { is_live?: boolean }).is_live;
