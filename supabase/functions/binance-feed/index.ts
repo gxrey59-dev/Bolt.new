@@ -12,8 +12,8 @@ const supabase = createClient(
 );
 
 const BINANCE_BASE = "https://api.binance.us";
-const BINANCE_API_KEY = Deno.env.get("BINANCE_API_KEY") ?? "";
-const BINANCE_SECRET_KEY = Deno.env.get("BINANCE_SECRET_KEY") ?? "";
+const BINANCE_API_KEY = Deno.env.get("BINANCE_API_KEY_3")?.trim() ?? "";
+const BINANCE_SECRET_KEY = Deno.env.get("BINANCE_SECRET_KEY_3")?.trim() ?? "";
 
 // Cache for exchange symbol filters (LOT_SIZE etc.)
 let symbolFiltersCache: Map<string, { minQty: number; stepSize: number; minNotional: number }> | null = null;
@@ -694,7 +694,13 @@ async function executeTrade(
   const minNotional = 5.5;
   if (availableBalance < minNotional) return { tradeId: null, reasoning: `Insufficient available balance: ${availableBalance.toFixed(2)} (min ${minNotional})`, error: null };
 
-  const positionValue = Math.min(availableBalance * (config.maxPositionPct / 100), availableBalance * 0.8);
+  const sizedPosition = availableBalance * (config.maxPositionPct / 100);
+  const affordableCap = availableBalance * 0.8;
+  // Buffer above the exchange minimum so rounding to the lot size cannot drop the order below it
+  const liveFloor = minNotional * 1.1;
+  const positionValue = isLive
+    ? Math.min(Math.max(sizedPosition, liveFloor), affordableCap)
+    : Math.min(sizedPosition, affordableCap);
   if (isLive && positionValue < minNotional) return { tradeId: null, reasoning: `Position value ${positionValue.toFixed(2)} below exchange minimum`, error: null };
   let quantity = positionValue / currentPrice;
 
