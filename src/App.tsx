@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback } from 'react';
-import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target } from 'lucide-react';
+import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3 } from 'lucide-react';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
 import Header from '@/components/Header';
@@ -10,6 +10,7 @@ const AuditFeed = lazy(() => import('@/components/AuditFeed'));
 const WithdrawalErrorLog = lazy(() => import('@/components/WithdrawalErrorLog'));
 const BinanceKeyStatusBadge = lazy(() => import('@/components/BinanceKeyStatusBadge'));
 const DashboardView = lazy(() => import('@/components/DashboardView'));
+const FactionPerformanceDashboard = lazy(() => import('@/components/FactionPerformanceDashboard'));
 const SentimentOverride = lazy(() => import('@/components/SentimentOverride'));
 const TableView = lazy(() => import('@/components/TableView'));
 const CREAMSweepPanel = lazy(() => import('@/components/CREAMSweepPanel'));
@@ -31,6 +32,7 @@ const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'live', label: 'Live Terminal', icon: Radio },
   { id: 'command', label: 'Command Center', icon: Monitor },
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'performance', label: 'Performance', icon: BarChart3 },
   { id: 'table', label: 'Table View', icon: Table },
   { id: 'operations', label: 'Operations', icon: Settings },
   { id: 'nft', label: 'NFT Armory', icon: Gem },
@@ -139,6 +141,10 @@ export default function App() {
               <DashboardView factions={factions} />
               <SentimentOverride sentiment={sentiment} />
             </>
+          )}
+
+          {tab === 'performance' && (
+            <FactionPerformanceDashboard factions={factions} />
           )}
 
           {tab === 'table' && (
