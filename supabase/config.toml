@@ -10,5 +10,3 @@ verify_jwt = false
 [functions.backtest-engine]
 verify_jwt = false
 
-[functions.solana-monitor]
-verify_jwt = false
