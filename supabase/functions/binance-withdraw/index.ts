@@ -359,6 +359,27 @@ Deno.serve(async (req: Request) => {
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    // ─── Order validation (Binance /order/test, never fills) ─────
+    if (path === "/order-test") {
+      const result = await binanceSignedCall("/api/v3/order/test", {
+        symbol: "BTCUSDT",
+        side: "BUY",
+        type: "MARKET",
+        quoteOrderQty: "10",
+        recvWindow: "10000",
+      }, "POST");
+      return new Response(JSON.stringify({
+        ok: result.ok,
+        status: result.status,
+        endpoint: result.endpoint,
+        response: result.ok ? "Order accepted by Binance validation (not filled)" : result.raw.slice(0, 300),
+        checkedAt: new Date().toISOString(),
+      }), {
+        status: result.ok ? 200 : (result.status || 500),
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // ─── Routes listing ──────────────────────────────────────────
     if (path === "/routes") {
       const withdrawalId = url.searchParams.get("withdrawalId");
