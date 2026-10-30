@@ -77,12 +77,25 @@ export default function RevenueCommandCenter() {
       return;
     }
     try {
-      const { data, error: queryError } = await supabase
-        .from('revenue_streams')
-        .select('*')
-        .order('target_revenue', { ascending: false });
-      if (queryError) throw new Error(queryError.message);
-      setStreams((data ?? []) as RevenueStream[]);
+      const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const [streamRes, tradeRes] = await Promise.all([
+        supabase.from('revenue_streams').select('*').order('target_revenue', { ascending: false }),
+        supabase.from('paper_trades').select('pnl, closed_at').eq('is_live', true).eq('status', 'closed').gte('closed_at', monthAgo),
+      ]);
+      if (streamRes.error) throw new Error(streamRes.error.message);
+      if (tradeRes.error) throw new Error(tradeRes.error.message);
+
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const trades = (tradeRes.data ?? []) as { pnl: number; closed_at: string }[];
+      const monthlyPnl = trades.reduce((s, t) => s + Number(t.pnl), 0);
+      const dailyPnl = trades
+        .filter(t => new Date(t.closed_at) >= todayStart)
+        .reduce((s, t) => s + Number(t.pnl), 0);
+
+      setStreams(((streamRes.data ?? []) as RevenueStream[]).map(s =>
+        s.category === 'trading' ? { ...s, current_revenue: monthlyPnl, current_value: dailyPnl } : s,
+      ));
       setError('');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Revenue data is unavailable.');
