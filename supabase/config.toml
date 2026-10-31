@@ -4,6 +4,9 @@ verify_jwt = false
 [functions.binance-feed]
 verify_jwt = false
 
+[functions.binance-account]
+verify_jwt = false
+
 [functions.get-config]
 verify_jwt = false
 

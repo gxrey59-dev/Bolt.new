@@ -16,6 +16,10 @@
     "get-config": {
       "hasChanged": false,
       "hash": "47b5e77867e5bab6dee78fc8a446e0d6a40c9d71a7fe6c7ea80a87ee930248b0"
+    },
+    "binance-account": {
+      "hasChanged": false,
+      "hash": "09365fce63715f4f507bbb9caaade9ad58bdde75c79f3120097d4c138a9579c2"
     }
   }
 }

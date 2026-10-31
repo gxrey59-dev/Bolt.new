@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback } from 'react';
-import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3, ArrowUpFromLine } from 'lucide-react';
+import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3, ArrowUpFromLine, Activity } from 'lucide-react';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
 import Header from '@/components/Header';
@@ -28,6 +28,7 @@ const RevenueCommandCenter = lazy(() => import('@/components/RevenueCommandCente
 const RevenueSprintDashboard = lazy(() => import('@/components/RevenueSprintDashboard'));
 const BillionRoadmap = lazy(() => import('@/components/BillionRoadmap'));
 const WithdrawalPanel = lazy(() => import('@/components/WithdrawalPanel'));
+const LiveExecutionDashboard = lazy(() => import('@/components/LiveExecutionDashboard'));
 
 const DATABASE_TABS = new Set<TabId>(['command', 'dashboard', 'table', 'operations']);
 const DASHBOARD_DATA_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/binance-feed/dashboard-data`;
@@ -35,6 +36,7 @@ const DASHBOARD_DATA_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/bi
 const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'sprint', label: '24h Sprint', icon: Flame },
   { id: 'live', label: 'Live Terminal', icon: Radio },
+  { id: 'execution', label: 'Live Execution', icon: Activity },
   { id: 'command', label: 'Command Center', icon: Monitor },
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'performance', label: 'Performance', icon: BarChart3 },
@@ -140,6 +142,12 @@ export default function App() {
           {tab === 'live' && (
             <OperatorGate status={operatorStatus}>
               <LiveTradingDashboard />
+            </OperatorGate>
+          )}
+
+          {tab === 'execution' && (
+            <OperatorGate status={operatorStatus}>
+              <LiveExecutionDashboard />
             </OperatorGate>
           )}
 
