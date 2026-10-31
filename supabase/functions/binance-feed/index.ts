@@ -1169,6 +1169,24 @@ async function requireOperator(req: Request): Promise<Response | null> {
   return null;
 }
 
+async function requireScanCaller(req: Request): Promise<Response | null> {
+  const provided = req.headers.get("x-cron-secret") ?? "";
+  if (!provided) return requireOperator(req);
+  const { data, error } = await supabase
+    .from("internal_secrets")
+    .select("value")
+    .eq("name", "scan_cron")
+    .maybeSingle();
+  if (error) throw new Error(`Scan secret check failed: ${error.message}`);
+  if (!data || provided !== data.value) {
+    return new Response(JSON.stringify({ error: "Unauthorized scan request" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  return null;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
 
@@ -1178,6 +1196,11 @@ Deno.serve(async (req: Request) => {
 
     if (OPERATOR_ROUTES.has(path)) {
       const denied = await requireOperator(req);
+      if (denied) return denied;
+    }
+
+    if (path === "/scan") {
+      const denied = await requireScanCaller(req);
       if (denied) return denied;
     }
 

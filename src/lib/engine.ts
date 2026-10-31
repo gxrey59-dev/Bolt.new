@@ -16,13 +16,9 @@ export async function runStrategyScan(): Promise<{
   tradesClosed: number;
 } | null> {
   try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-feed/scan`, {
+    const res = await operatorFetch('binance-feed/scan', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${ANON_KEY}`,
-        apikey: ANON_KEY,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
     });
     if (!res.ok) {
       console.error('Strategy scan failed:', res.status);
