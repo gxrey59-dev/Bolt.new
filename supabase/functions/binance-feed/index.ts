@@ -580,13 +580,19 @@ async function getStrategyConfig(): Promise<FullConfig> {
 
 // ─── Win Rate Gate ─────────────────────────────────────────────────
 
-async function getAllowedPairKeys(): Promise<Set<string>> {
+async function getAllowedFactionsBySymbol(): Promise<Map<string, string[]>> {
   const { data, error } = await supabase
     .from("bot_pair_allowlist")
     .select("faction_id, symbol")
     .eq("enabled", true);
   if (error) throw new Error(`Pair allowlist unavailable: ${error.message}`);
-  return new Set((data ?? []).map((row) => `${row.faction_id}|${row.symbol}`));
+  const bySymbol = new Map<string, string[]>();
+  for (const row of data ?? []) {
+    const factions = bySymbol.get(row.symbol) ?? [];
+    factions.push(row.faction_id);
+    bySymbol.set(row.symbol, factions);
+  }
+  return bySymbol;
 }
 
 async function getStrategyWinRates(): Promise<Map<string, { winRate: number; totalTrades: number }>> {
@@ -1381,7 +1387,7 @@ Deno.serve(async (req: Request) => {
       const currentPrices = new Map<string, number>();
       const priceDataMap = new Map<string, PriceData>();
       const tradesOpened: string[] = [];
-      const allowedPairKeys = await getAllowedPairKeys();
+      const allowedFactionsBySymbol = await getAllowedFactionsBySymbol();
       const liveTickers = await fetchTickers(TRADING_PAIRS);
       const liveTickerMap = new Map(liveTickers.map((ticker) => [ticker.symbol, ticker]));
 
@@ -1426,25 +1432,17 @@ Deno.serve(async (req: Request) => {
             });
             continue;
           }
-          // Block MACD-labeled signals — historically negative P&L strategy
-          if (signal.strategy === "macd_crossover") {
+          const eligibleFactions = await refreshEligibleFactions();
+          const allowedFactions = (allowedFactionsBySymbol.get(symbol) ?? []).filter((f) => eligibleFactions.includes(f));
+          if (allowedFactions.length === 0) {
             signals.push({
               symbol, faction: await pickFaction(symbol), strategy: signal.strategy, side: signal.side,
-              reasoning: signal.reasoning + " [skipped: macd_crossover blocked]", price: currentPrice, strength: signal.strength,
-              tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
-            });
-            continue;
-          }
-
-          const factionId = await pickFaction(symbol);
-          if (!allowedPairKeys.has(`${factionId}|${symbol}`)) {
-            signals.push({
-              symbol, faction: factionId, strategy: signal.strategy, side: signal.side,
               reasoning: signal.reasoning + " [skipped: pair paused by allowlist]", price: currentPrice, strength: signal.strength,
               tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
             });
             continue;
           }
+          const factionId = hashSymbol(symbol, allowedFactions);
           const strategyStats = strategyWinRates.get(signal.strategy);
           const skippedByWinRate = strategyStats && strategyStats.totalTrades >= 5 && strategyStats.winRate < config.minWinRateThreshold;
 
