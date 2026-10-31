@@ -90,7 +90,7 @@ async function getOrders(url: URL): Promise<Response> {
   const results = await Promise.all(symbols.map(async (symbol) => {
     const [orders, trades] = await Promise.all([
       signedGet("/api/v3/allOrders", { symbol, limit: "50" }) as Promise<Record<string, unknown>[]>,
-      signedGet("/api/v3/myTrades", { symbol, limit: "100" }) as Promise<Record<string, unknown>[]>,
+      signedGet("/api/v3/myTrades", { symbol, limit: "1000" }) as Promise<Record<string, unknown>[]>,
     ]);
     return { symbol, orders, trades };
   }));

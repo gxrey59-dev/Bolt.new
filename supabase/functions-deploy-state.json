@@ -5,6 +5,10 @@
       "hasChanged": false,
       "hash": "d20370007e364d10ecddc3bf68e8c93d07b72a4edbc4ca6e6ac7187b595c7849"
     },
+    "binance-account": {
+      "hasChanged": false,
+      "hash": "684f83244615952827aa3a22f405c764e33570d347d595e2152dfd3ace0821f1"
+    },
     "binance-feed": {
       "hasChanged": false,
       "hash": "b4b7aa53ea23f201b41c3037736330540f9d8d06e3413840c581be9237ebfdcf"
@@ -16,10 +20,6 @@
     "get-config": {
       "hasChanged": false,
       "hash": "47b5e77867e5bab6dee78fc8a446e0d6a40c9d71a7fe6c7ea80a87ee930248b0"
-    },
-    "binance-account": {
-      "hasChanged": false,
-      "hash": "09365fce63715f4f507bbb9caaade9ad58bdde75c79f3120097d4c138a9579c2"
     }
   }
 }
