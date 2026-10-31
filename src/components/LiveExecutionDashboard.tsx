@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { Activity, Download, RefreshCw, Wallet } from 'lucide-react';
 import ExecutionOrdersTable from '@/components/ExecutionOrdersTable';
+import PairAllowlistPanel from '@/components/PairAllowlistPanel';
 import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { operatorFetch } from '@/lib/operatorAuth';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
@@ -139,6 +140,8 @@ export default function LiveExecutionDashboard() {
           <p className="text-2xl font-semibold tabular-nums text-sky-400">{openCount}</p>
         </div>
       </div>
+
+      <PairAllowlistPanel />
 
       <ExecutionOrdersTable orders={orders} loading={loading} />
     </section>

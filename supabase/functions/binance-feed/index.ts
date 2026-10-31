@@ -580,6 +580,15 @@ async function getStrategyConfig(): Promise<FullConfig> {
 
 // ─── Win Rate Gate ─────────────────────────────────────────────────
 
+async function getAllowedPairKeys(): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from("bot_pair_allowlist")
+    .select("faction_id, symbol")
+    .eq("enabled", true);
+  if (error) throw new Error(`Pair allowlist unavailable: ${error.message}`);
+  return new Set((data ?? []).map((row) => `${row.faction_id}|${row.symbol}`));
+}
+
 async function getStrategyWinRates(): Promise<Map<string, { winRate: number; totalTrades: number }>> {
   const { data: trades } = await supabase
     .from("paper_trades")
@@ -1372,6 +1381,7 @@ Deno.serve(async (req: Request) => {
       const currentPrices = new Map<string, number>();
       const priceDataMap = new Map<string, PriceData>();
       const tradesOpened: string[] = [];
+      const allowedPairKeys = await getAllowedPairKeys();
       const liveTickers = await fetchTickers(TRADING_PAIRS);
       const liveTickerMap = new Map(liveTickers.map((ticker) => [ticker.symbol, ticker]));
 
@@ -1427,6 +1437,14 @@ Deno.serve(async (req: Request) => {
           }
 
           const factionId = await pickFaction(symbol);
+          if (!allowedPairKeys.has(`${factionId}|${symbol}`)) {
+            signals.push({
+              symbol, faction: factionId, strategy: signal.strategy, side: signal.side,
+              reasoning: signal.reasoning + " [skipped: pair paused by allowlist]", price: currentPrice, strength: signal.strength,
+              tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
+            });
+            continue;
+          }
           const strategyStats = strategyWinRates.get(signal.strategy);
           const skippedByWinRate = strategyStats && strategyStats.totalTrades >= 5 && strategyStats.winRate < config.minWinRateThreshold;
 
