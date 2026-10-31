@@ -37,6 +37,23 @@ async function requireOperator(req: Request): Promise<Response | null> {
   return null;
 }
 
+async function requireHarvestCaller(req: Request): Promise<Response | null> {
+  const provided = req.headers.get("x-cron-secret") ?? "";
+  const { data, error } = await supabase
+    .from("internal_secrets")
+    .select("value")
+    .eq("name", "harvest_cron")
+    .maybeSingle();
+  if (error) throw new Error(`Harvest secret check failed: ${error.message}`);
+  if (!data || !provided || provided !== data.value) {
+    return new Response(JSON.stringify({ error: "Unauthorized harvest request" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  return null;
+}
+
 async function hmacSha256(key: string, message: string): Promise<string> {
   const enc = new TextEncoder();
   const cryptoKey = await crypto.subtle.importKey(
@@ -267,6 +284,67 @@ async function spotSell(coin: string, quantity: number): Promise<{ orderId: stri
   }
 }
 
+// ─── Submit USDT withdrawal to an external wallet ──────────────────
+
+async function submitUsdtWithdrawal(
+  destAddress: string,
+  destNetwork: string,
+  transferAmount: number,
+  usdtBalance: number,
+): Promise<Response> {
+  const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
+  const withdrawParams: Record<string, string> = {
+    coin: "USDT",
+    network: destNetwork,
+    address: destAddress,
+    amount: transferAmount.toFixed(8),
+    recvWindow: "10000",
+    timestamp: Date.now().toString(),
+  };
+
+  const result = await binanceSignedCall("/sapi/v1/capital/withdraw/apply", withdrawParams, "POST");
+
+  if (!result.ok) {
+    const errMsg = (result.data as Record<string, string>)?.msg ?? result.raw.slice(0, 300);
+    await supabase.from("audit_log").insert({
+      event_type: "withdrawal_failed",
+      entity_type: "withdrawals",
+      entity_id: "manual",
+      message: `Withdrawal FAILED: ${transferAmount} USDT to ${destAddress.slice(0, 10)}... via ${destNetwork} — ${errMsg}`,
+      metadata: { address: destAddress, network: destNetwork, amount: transferAmount, error: errMsg, status: result.status },
+    });
+    return new Response(JSON.stringify({
+      success: false,
+      error: errMsg,
+      status: result.status,
+      endpoint: result.endpoint,
+      usdtBalance,
+      requestedAmount: transferAmount,
+    }), { status: result.status || 500, headers: jsonHeaders });
+  }
+
+  const withdrawId = (result.data as Record<string, string>)?.id ?? "unknown";
+
+  await supabase.from("audit_log").insert({
+    event_type: "withdrawal_completed",
+    entity_type: "withdrawals",
+    entity_id: withdrawId,
+    message: `Withdrawal submitted: ${transferAmount} USDT to ${destAddress.slice(0, 10)}... via ${destNetwork} — ID: ${withdrawId}`,
+    metadata: { address: destAddress, network: destNetwork, amount: transferAmount, withdrawId, binanceResponse: result.data },
+  });
+
+  return new Response(JSON.stringify({
+    success: true,
+    status: "submitted",
+    withdrawId,
+    amount: transferAmount,
+    address: destAddress,
+    network: destNetwork,
+    usdtBalanceBefore: usdtBalance,
+    message: `Withdrawal of ${transferAmount} USDT submitted to ${destAddress.slice(0, 10)}... via ${destNetwork}. Binance withdrawal ID: ${withdrawId}`,
+  }), { headers: jsonHeaders });
+}
+
 // ─── Main Handler ───────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -275,11 +353,11 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const denied = await requireOperator(req);
-    if (denied) return denied;
-
     const url = new URL(req.url);
     const path = url.pathname.replace("/binance-withdraw", "");
+
+    const denied = path === "/harvest" ? await requireHarvestCaller(req) : await requireOperator(req);
+    if (denied) return denied;
 
     // ─── Diagnostic ──────────────────────────────────────────────
     if (path === "/test") {
@@ -632,56 +710,36 @@ Deno.serve(async (req: Request) => {
         }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
-      const withdrawParams: Record<string, string> = {
-        coin: "USDT",
-        network: destNetwork,
-        address: destAddress,
-        amount: transferAmount.toFixed(8),
-        recvWindow: "10000",
-        timestamp: Date.now().toString(),
-      };
+      return submitUsdtWithdrawal(destAddress, destNetwork, transferAmount, usdtBalance);
+    }
 
-      const result = await binanceSignedCall("/sapi/v1/capital/withdraw/apply", withdrawParams, "POST");
-
-      if (!result.ok) {
-        const errMsg = (result.data as Record<string, string>)?.msg ?? result.raw.slice(0, 300);
-        await supabase.from("audit_log").insert({
-          event_type: "withdrawal_failed",
-          entity_type: "withdrawals",
-          entity_id: "manual",
-          message: `Withdrawal FAILED: ${transferAmount} USDT to ${destAddress.slice(0, 10)}... via ${destNetwork} — ${errMsg}`,
-          metadata: { address: destAddress, network: destNetwork, amount: transferAmount, error: errMsg, status: result.status },
+    if (path === "/harvest") {
+      const { data: cfg } = await supabase
+        .from("withdrawal_config")
+        .select("*")
+        .eq("id", 1)
+        .maybeSingle();
+      if (!cfg) {
+        return new Response(JSON.stringify({ success: false, error: "Withdrawal config is missing" }), {
+          status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
-        return new Response(JSON.stringify({
-          success: false,
-          error: errMsg,
-          status: result.status,
-          endpoint: result.endpoint,
-          usdtBalance,
-          requestedAmount: transferAmount,
-        }), { status: result.status || 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      if (!cfg.armed) {
+        return new Response(JSON.stringify({ success: true, status: "disarmed" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
 
-      const withdrawId = (result.data as Record<string, string>)?.id ?? "unknown";
+      const usdtBalance = await getUsdtBalance();
+      const reserve = parseFloat(cfg.min_threshold);
+      const harvestAmount = Math.floor((usdtBalance - reserve) * 100) / 100;
+      if (!(harvestAmount > 0)) {
+        return new Response(JSON.stringify({ success: true, status: "below_threshold", usdtBalance }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
 
-      await supabase.from("audit_log").insert({
-        event_type: "withdrawal_completed",
-        entity_type: "withdrawals",
-        entity_id: withdrawId,
-        message: `Withdrawal submitted: ${transferAmount} USDT to ${destAddress.slice(0, 10)}... via ${destNetwork} — ID: ${withdrawId}`,
-        metadata: { address: destAddress, network: destNetwork, amount: transferAmount, withdrawId, binanceResponse: result.data },
-      });
-
-      return new Response(JSON.stringify({
-        success: true,
-        status: "submitted",
-        withdrawId,
-        amount: transferAmount,
-        address: destAddress,
-        network: destNetwork,
-        usdtBalanceBefore: usdtBalance,
-        message: `Withdrawal of ${transferAmount} USDT submitted to ${destAddress.slice(0, 10)}... via ${destNetwork}. Binance withdrawal ID: ${withdrawId}`,
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return submitUsdtWithdrawal(cfg.destination_address, cfg.network, harvestAmount, usdtBalance);
     }
 
     return new Response(JSON.stringify({ error: "Unknown route. Use /balance, /transfer, /routes, or / (sweep)" }), {
