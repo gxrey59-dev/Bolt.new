@@ -1145,12 +1145,41 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
 
 // ─── Main Handler ──────────────────────────────────────────────────
 
+const OPERATOR_ROUTES = new Set(["/kill-switch", "/close-all", "/sell-dust", "/account"]);
+
+async function requireOperator(req: Request): Promise<Response | null> {
+  const token = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";
+  const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
+  if (!token) {
+    return new Response(JSON.stringify({ error: "Operator sign-in required" }), { status: 401, headers: jsonHeaders });
+  }
+  const { data: userData, error: userError } = await supabase.auth.getUser(token);
+  if (userError || !userData.user) {
+    return new Response(JSON.stringify({ error: "Operator sign-in required" }), { status: 401, headers: jsonHeaders });
+  }
+  const { data: operator, error: opError } = await supabase
+    .from("app_operators")
+    .select("user_id")
+    .eq("user_id", userData.user.id)
+    .maybeSingle();
+  if (opError) throw new Error(`Operator check failed: ${opError.message}`);
+  if (!operator) {
+    return new Response(JSON.stringify({ error: "This account is not authorized for trading controls" }), { status: 403, headers: jsonHeaders });
+  }
+  return null;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
 
   try {
     const url = new URL(req.url);
     const path = url.pathname.replace("/binance-feed", "");
+
+    if (OPERATOR_ROUTES.has(path)) {
+      const denied = await requireOperator(req);
+      if (denied) return denied;
+    }
 
     // ─── GET /prices ──────────────────────────────────────────────
     if (path === "" || path === "/" || path === "/prices") {

@@ -3,6 +3,9 @@ import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, 
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
 import Header from '@/components/Header';
+import OperatorGate from '@/components/OperatorGate';
+import { useOperatorSession } from '@/lib/useOperatorSession';
+import { signOutOperator } from '@/lib/operatorAuth';
 
 const FactionGrid = lazy(() => import('@/components/FactionGrid'));
 const SignalFeed = lazy(() => import('@/components/SignalFeed'));
@@ -50,6 +53,7 @@ export default function App() {
   const [sentiment, setSentiment] = useState<Sentiment | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [dataError, setDataError] = useState('');
+  const { status: operatorStatus } = useOperatorSession();
 
   const fetchAll = useCallback(async () => {
     if (!DATABASE_TABS.has(tab)) return;
@@ -85,7 +89,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-zinc-950">
-      <Header factions={factions} sweeps={sweeps} />
+      <Header factions={factions} sweeps={sweeps} operator={operatorStatus === 'operator'} />
 
       <nav className="sticky top-[73px] z-40 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1600px] gap-1 px-6 py-2">
@@ -107,6 +111,14 @@ export default function App() {
               </button>
             );
           })}
+          {(operatorStatus === 'operator' || operatorStatus === 'signed-in') && (
+            <button
+              onClick={() => { void signOutOperator(); }}
+              className="ml-auto rounded-lg px-4 py-2 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-900 hover:text-zinc-300"
+            >
+              Sign out
+            </button>
+          )}
         </div>
       </nav>
 
@@ -123,7 +135,9 @@ export default function App() {
           )}
 
           {tab === 'live' && (
-            <LiveTradingDashboard />
+            <OperatorGate status={operatorStatus}>
+              <LiveTradingDashboard />
+            </OperatorGate>
           )}
 
           {tab === 'command' && (
@@ -152,13 +166,15 @@ export default function App() {
               <TableView factions={factions} />
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <CREAMSweepPanel sweeps={sweeps} />
-                <RevenueSweepPanel />
+                <OperatorGate status={operatorStatus}>
+                  <RevenueSweepPanel />
+                </OperatorGate>
               </div>
             </>
           )}
 
           {tab === 'operations' && (
-            <>
+            <OperatorGate status={operatorStatus}>
               <BinanceFeedPanel />
               <BinanceKeyStatusBadge />
               <WithdrawalErrorLog />
@@ -170,7 +186,7 @@ export default function App() {
                 <SignalFeed signals={signals} />
                 <AuditFeed entries={audit} />
               </div>
-            </>
+            </OperatorGate>
           )}
 
           {tab === 'nft' && (

@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { operatorFetch } from './operatorAuth';
 import { FACTION_LOSS_THRESHOLD, GLOBAL_LOSS_THRESHOLD } from './constants';
 import type { Faction, OpenPosition } from './types';
 
@@ -88,13 +89,9 @@ export async function fetchOpenPositions(): Promise<OpenPosition[]> {
 
 export async function closeAllPositions(): Promise<number> {
   try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-feed/close-all`, {
+    const res = await operatorFetch('binance-feed/close-all', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${ANON_KEY}`,
-        apikey: ANON_KEY,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
     });
     if (!res.ok) return 0;
     const data = await res.json();

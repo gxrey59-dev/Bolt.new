@@ -7,6 +7,7 @@ import {
 import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import { FACTIONS, TRADING_PAIRS } from '@/lib/constants';
+import { operatorFetch } from '@/lib/operatorAuth';
 import { fetchOpenPositions, closeAllPositions, runStrategyScan } from '@/lib/engine';
 import type { OpenPosition, PaperTrade } from '@/lib/types';
 
@@ -66,9 +67,9 @@ async function fetchLivePrices(): Promise<PriceTick[]> {
 
 async function toggleKillSwitch(action: 'trip' | 'reset'): Promise<boolean> {
   try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-feed/kill-switch`, {
+    const res = await operatorFetch('binance-feed/kill-switch', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${ANON_KEY}`, apikey: ANON_KEY, 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action }),
     });
     return res.ok;

@@ -15,6 +15,28 @@ const BINANCE_BASE = "https://api.binance.us";
 const BINANCE_API_KEY = Deno.env.get("BINANCE_API_KEY_3")?.trim() ?? "";
 const BINANCE_SECRET_KEY = Deno.env.get("BINANCE_SECRET_KEY_3")?.trim() ?? "";
 
+async function requireOperator(req: Request): Promise<Response | null> {
+  const token = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";
+  const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
+  if (!token) {
+    return new Response(JSON.stringify({ error: "Operator sign-in required" }), { status: 401, headers: jsonHeaders });
+  }
+  const { data: userData, error: userError } = await supabase.auth.getUser(token);
+  if (userError || !userData.user) {
+    return new Response(JSON.stringify({ error: "Operator sign-in required" }), { status: 401, headers: jsonHeaders });
+  }
+  const { data: operator, error: opError } = await supabase
+    .from("app_operators")
+    .select("user_id")
+    .eq("user_id", userData.user.id)
+    .maybeSingle();
+  if (opError) throw new Error(`Operator check failed: ${opError.message}`);
+  if (!operator) {
+    return new Response(JSON.stringify({ error: "This account is not authorized for withdrawals" }), { status: 403, headers: jsonHeaders });
+  }
+  return null;
+}
+
 async function hmacSha256(key: string, message: string): Promise<string> {
   const enc = new TextEncoder();
   const cryptoKey = await crypto.subtle.importKey(
@@ -253,6 +275,9 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    const denied = await requireOperator(req);
+    if (denied) return denied;
+
     const url = new URL(req.url);
     const path = url.pathname.replace("/binance-withdraw", "");
 
@@ -557,11 +582,11 @@ Deno.serve(async (req: Request) => {
     }
 
     // ─── Transfer USDT to external wallet ───────────────────────
+    // ─── Operator-authorized transfer of USDT to an external wallet ───
     if (path === "/transfer") {
       const body = await req.json().catch(() => ({}));
-      const { address, network, amount } = body as { address: string; network: string; amount?: number };
+      const { address, network, amount } = body as { address?: string; network?: string; amount?: number };
 
-      // Load from withdrawal_config if not provided
       let destAddress = address;
       let destNetwork = network;
       let transferAmount = amount;
@@ -585,7 +610,6 @@ Deno.serve(async (req: Request) => {
         }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
-      // Get current USDT balance
       const usdtBalance = await getUsdtBalance();
       if (usdtBalance < 1) {
         return new Response(JSON.stringify({
@@ -595,7 +619,6 @@ Deno.serve(async (req: Request) => {
         }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
-      // If no amount specified, withdraw everything minus fee
       if (transferAmount === undefined || transferAmount === null) {
         transferAmount = usdtBalance;
       }
@@ -609,7 +632,6 @@ Deno.serve(async (req: Request) => {
         }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
-      // Place the withdrawal via Binance.US signed API
       const withdrawParams: Record<string, string> = {
         coin: "USDT",
         network: destNetwork,

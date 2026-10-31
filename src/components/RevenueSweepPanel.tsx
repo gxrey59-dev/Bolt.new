@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Send, Zap, AlertTriangle, CheckCircle2, XCircle, Radio, RefreshCw, Coins } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { operatorFetch } from '@/lib/operatorAuth';
 import type { Collection, CollectionRoute } from '@/lib/types';
 
 export default function RevenueSweepPanel() {
@@ -27,11 +28,7 @@ export default function RevenueSweepPanel() {
 
     async function fetchBalances() {
       try {
-        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-        const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-        const res = await fetch(`${supabaseUrl}/functions/v1/binance-withdraw/balance`, {
-          headers: { Authorization: `Bearer ${anonKey}`, apikey: anonKey },
-        });
+        const res = await operatorFetch('binance-withdraw/balance');
         const data = await res.json();
         if (data.ok && data.nonZeroBalances) {
           const usdt = data.nonZeroBalances.find((b: { coin: string }) => b.coin === 'USDT');
@@ -51,15 +48,9 @@ export default function RevenueSweepPanel() {
     setCollecting(true);
     setLastResult(null);
     try {
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-      const res = await fetch(`${supabaseUrl}/functions/v1/binance-withdraw`, {
+      const res = await operatorFetch('binance-withdraw', {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${anonKey}`,
-          apikey: anonKey,
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
       const result = await res.json();
@@ -81,9 +72,7 @@ export default function RevenueSweepPanel() {
       setCollections(wData.data ?? []);
       setRoutes(rData.data ?? []);
       // Refresh balances
-      const balRes = await fetch(`${supabaseUrl}/functions/v1/binance-withdraw/balance`, {
-        headers: { Authorization: `Bearer ${anonKey}`, apikey: anonKey },
-      });
+      const balRes = await operatorFetch('binance-withdraw/balance');
       const balData = await balRes.json();
       if (balData.ok && balData.nonZeroBalances) {
         const usdt = balData.nonZeroBalances.find((b: { coin: string }) => b.coin === 'USDT');

@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { KeyRound, Copy, Check, Wifi } from 'lucide-react';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
+import { operatorFetch } from '@/lib/operatorAuth';
 
 interface KeyStatus {
   ok: boolean;
@@ -11,9 +12,6 @@ interface KeyStatus {
   error?: string;
   checkedAt: string;
 }
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 function Badge({ label, value }: { label: string; value: boolean | null }) {
   const known = value !== null;
@@ -42,9 +40,7 @@ export default function BinanceKeyStatusBadge() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-withdraw/permissions`, {
-        headers: { Authorization: `Bearer ${ANON_KEY}`, apikey: ANON_KEY },
-      });
+      const res = await operatorFetch('binance-withdraw/permissions');
       const data = (await res.json()) as KeyStatus;
       setStatus(data);
       setFetchError('');

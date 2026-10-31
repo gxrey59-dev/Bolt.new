@@ -3,6 +3,7 @@ import { TrendingUp, TrendingDown, Zap, Brain, Target, Shield, X, RefreshCw, Ale
 import { supabase } from '@/lib/supabase';
 import { FACTIONS } from '@/lib/constants';
 import { fetchOpenPositions, closeAllPositions } from '@/lib/engine';
+import { operatorFetch } from '@/lib/operatorAuth';
 import type { OpenPosition, PaperTrade } from '@/lib/types';
 
 const strategyStyles: Record<string, { color: string; bg: string; label: string }> = {
@@ -41,9 +42,9 @@ async function fetchConfig(): Promise<TradingConfig | null> {
 
 async function toggleKillSwitch(action: 'trip' | 'reset'): Promise<boolean> {
   try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-feed/kill-switch`, {
+    const res = await operatorFetch('binance-feed/kill-switch', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${ANON_KEY}`, apikey: ANON_KEY, 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action }),
     });
     return res.ok;

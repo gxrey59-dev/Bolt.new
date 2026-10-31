@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { Crown, Activity, Wallet } from 'lucide-react';
 import type { Faction, Sweep } from '@/lib/types';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
+import { operatorFetch } from '@/lib/operatorAuth';
 
-interface Props { factions: Faction[]; sweeps: Sweep[]; }
+interface Props { factions: Faction[]; sweeps: Sweep[]; operator: boolean; }
 export default function Header(props: Props) {
-  void props; // Retain the original component API without using paper balances.
+  const { operator } = props;
   const [balance, setBalance] = useState<number | null>(null);
   const [error, setError] = useState('');
   const controllerRef = useRef<AbortController>();
@@ -13,15 +14,16 @@ export default function Header(props: Props) {
     return () => controllerRef.current?.abort();
   }, []);
   async function load() {
+      if (!operator) {
+        setBalance(null); setError('Operator sign-in required to view the exchange balance.');
+        return;
+      }
       controllerRef.current?.abort();
       const controller = new AbortController();
       controllerRef.current = controller;
       const timeout = setTimeout(() => controller.abort(), 10000);
       try {
-        const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/binance-feed/account`, {
-          signal: controller.signal,
-          headers: { apikey: import.meta.env.VITE_SUPABASE_ANON_KEY, Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}` },
-        });
+        const response = await operatorFetch('binance-feed/account', { signal: controller.signal });
         if (!response.ok) throw new Error(`Account connection returned HTTP ${response.status}.`);
         const data = await response.json();
         if (data.error || !Array.isArray(data.balances)) throw new Error(data.error || 'Account response is incomplete.');
