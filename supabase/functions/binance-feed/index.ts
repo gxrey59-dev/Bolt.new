@@ -157,7 +157,7 @@ async function refreshEligibleFactions(): Promise<string[]> {
     if (f.status === "halted") continue;
     if (f.paused_until && f.paused_until > nowIso) continue;
     if (f.cooldown_until && f.cooldown_until > nowIso) continue;
-    if (Number(f.paper_balance) < 5) continue;
+    if (Number(f.paper_balance) < 1) continue;
     if ((f.open_positions ?? 0) >= 3) continue;
     eligible.push(f.id);
     if (f.status === "paused" && (!f.paused_until || f.paused_until <= nowIso)) {
