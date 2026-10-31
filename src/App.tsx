@@ -4,6 +4,7 @@ import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
 import Header from '@/components/Header';
 import OperatorGate from '@/components/OperatorGate';
+import OperatorStatusCard from '@/components/OperatorStatusCard';
 import { useOperatorSession } from '@/lib/useOperatorSession';
 import { signOutOperator } from '@/lib/operatorAuth';
 
@@ -53,7 +54,7 @@ export default function App() {
   const [sentiment, setSentiment] = useState<Sentiment | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [dataError, setDataError] = useState('');
-  const { status: operatorStatus } = useOperatorSession();
+  const { status: operatorStatus, email: operatorEmail } = useOperatorSession();
 
   const fetchAll = useCallback(async () => {
     if (!DATABASE_TABS.has(tab)) return;
@@ -175,6 +176,7 @@ export default function App() {
 
           {tab === 'operations' && (
             <OperatorGate status={operatorStatus}>
+              <OperatorStatusCard email={operatorEmail} />
               <BinanceFeedPanel />
               <BinanceKeyStatusBadge />
               <WithdrawalErrorLog />
