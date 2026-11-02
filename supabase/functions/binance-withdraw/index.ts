@@ -538,7 +538,7 @@ Deno.serve(async (req: Request) => {
       const balances = await getNonUsdtBalances();
       const usdtBefore = await getUsdtBalance();
 
-      const sellResults: { coin: string; orderId: string | null; proceeds: number; error: string | null }[] = [];
+      const sellResults: { coin: string; orderId: string | null; proceeds: number; error: string | null; skipped?: boolean }[] = [];
       let totalErrors = 0;
 
       // Step 2: Sell each non-USDT coin to USDT via spot market order
@@ -549,12 +549,12 @@ Deno.serve(async (req: Request) => {
 
         // Skip if no trading pair or below minimum
         if (!f) {
-          sellResults.push({ coin: bal.coin, orderId: null, proceeds: 0, error: `No ${symbol} trading pair` });
+          sellResults.push({ coin: bal.coin, orderId: null, proceeds: 0, error: `No ${symbol} trading pair`, skipped: true });
           totalErrors++;
           continue;
         }
         if (bal.free * 1 < f.minNotional && bal.free < f.minQty) {
-          sellResults.push({ coin: bal.coin, orderId: null, proceeds: 0, error: `Balance too small to sell` });
+          sellResults.push({ coin: bal.coin, orderId: null, proceeds: 0, error: `Balance too small to sell`, skipped: true });
           continue;
         }
 
@@ -574,7 +574,8 @@ Deno.serve(async (req: Request) => {
 
       // Determine success: any sells that went through
       const successfulSells = sellResults.filter((s) => s.orderId !== null);
-      const success = successfulSells.length > 0 || balances.length === 0;
+      const attemptedSells = sellResults.filter((s) => !s.skipped);
+      const success = attemptedSells.length === 0 || successfulSells.length > 0;
 
       // Record the route
       if (withdrawalId) {
