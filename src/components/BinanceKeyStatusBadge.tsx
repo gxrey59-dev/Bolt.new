@@ -66,16 +66,29 @@ export default function BinanceKeyStatusBadge() {
       <div className="mb-4 flex items-center gap-2">
         <KeyRound className="h-4 w-4 text-cyan-400" />
         <h2 className="text-sm font-semibold text-zinc-200">Binance API Key Status</h2>
-        <span
-          className={`ml-auto flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase ${
-            !status ? 'bg-zinc-800 text-zinc-500'
-              : healthy ? 'bg-emerald-500/15 text-emerald-400'
-                : 'bg-red-500/15 text-red-400'
-          }`}
-        >
-          <span className={`h-1.5 w-1.5 rounded-full ${!status ? 'bg-zinc-600' : healthy ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
-          {!status ? 'Checking' : healthy ? 'Connected' : 'Error'}
-        </span>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <span
+            role="status"
+            className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase transition-colors duration-500 ${
+              !status ? 'bg-zinc-800 text-zinc-500'
+                : withdrawalsOn ? 'bg-emerald-500/15 text-emerald-400'
+                  : 'bg-amber-500/15 text-amber-400'
+            }`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full transition-colors duration-500 ${!status ? 'bg-zinc-600' : withdrawalsOn ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+            {!status ? 'Checking' : withdrawalsOn ? 'Withdrawals authorized' : 'Withdrawals not authorized'}
+          </span>
+          <span
+            className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase ${
+              !status ? 'bg-zinc-800 text-zinc-500'
+                : healthy ? 'bg-emerald-500/15 text-emerald-400'
+                  : 'bg-red-500/15 text-red-400'
+            }`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${!status ? 'bg-zinc-600' : healthy ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
+            {!status ? 'Checking' : healthy ? 'Connected' : 'Error'}
+          </span>
+        </div>
       </div>
 
       {fetchError && (
