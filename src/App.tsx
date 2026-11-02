@@ -13,6 +13,7 @@ const SignalFeed = lazy(() => import('@/components/SignalFeed'));
 const AuditFeed = lazy(() => import('@/components/AuditFeed'));
 const WithdrawalErrorLog = lazy(() => import('@/components/WithdrawalErrorLog'));
 const BinanceKeyStatusBadge = lazy(() => import('@/components/BinanceKeyStatusBadge'));
+const WithdrawalStatusBanner = lazy(() => import('@/components/WithdrawalStatusBanner'));
 const DashboardView = lazy(() => import('@/components/DashboardView'));
 const FactionPerformanceDashboard = lazy(() => import('@/components/FactionPerformanceDashboard'));
 const SentimentOverride = lazy(() => import('@/components/SentimentOverride'));
@@ -163,6 +164,9 @@ export default function App() {
 
           {tab === 'dashboard' && (
             <>
+              <OperatorGate status={operatorStatus}>
+                <WithdrawalStatusBanner />
+              </OperatorGate>
               <DashboardView factions={factions} />
               <SentimentOverride sentiment={sentiment} />
             </>
