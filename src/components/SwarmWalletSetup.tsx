@@ -1,39 +1,8 @@
 import { useCallback, useState, type FormEvent } from 'react';
 import { AlertTriangle, ArrowDownToLine, Check, Copy, ExternalLink, KeyRound, Loader2, RefreshCw, ShieldCheck, SlidersHorizontal, Wallet } from 'lucide-react';
-import { operatorFetch } from '@/lib/operatorAuth';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
-
-interface SwarmWallet {
-  address: string;
-  chain: string;
-  max_action_usd: number;
-  daily_cap_usd: number;
-  created_at: string;
-}
-interface Balance { symbol: string; amount: string }
-interface Deposit { symbol: string; amount: string; hash: string; from: string; at: string }
-interface Status {
-  wallet: SwarmWallet | null;
-  balances?: Balance[] | null;
-  checkedAt?: string;
-  source?: string;
-  error?: string;
-  deposits?: Deposit[] | null;
-  depositsError?: string;
-}
-
-const addressPattern = /^0x[0-9a-fA-F]{40}$/;
-const inputClass = 'w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 font-mono text-sm text-zinc-100 focus:border-teal-500/60 focus:outline-none focus:ring-2 focus:ring-teal-500/20';
-
-async function callWallet(path: string, init?: RequestInit): Promise<Status> {
-  const res = await operatorFetch(`swarm-wallet/${path}`, init);
-  const data = await res.json().catch(() => null) as (Status & { error?: string }) | null;
-  if (!res.ok || !data) throw new Error(data?.error ?? `Swarm wallet returned HTTP ${res.status}.`);
-  if (data.wallet !== null && (typeof data.wallet !== 'object' || !addressPattern.test(data.wallet.address))) {
-    throw new Error('The swarm wallet response was malformed.');
-  }
-  return data;
-}
+import { callWallet, postWallet, type SwarmStatus as Status, type SwarmWallet } from '@/lib/swarmWallet';
+import { AutoWithdrawCard, SpendsCard, inputClass } from '@/components/SwarmAutoWithdraw';
 
 export default function SwarmWalletSetup() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -75,8 +44,10 @@ export default function SwarmWalletSetup() {
         <>
           <DepositCard wallet={status.wallet} />
           <BalancesCard status={status} />
+          <LimitsCard wallet={status.wallet} spent24h={status.spent24h ?? 0} onSaved={wallet => setStatus(prev => prev ? { ...prev, wallet } : prev)} />
+          <AutoWithdrawCard wallet={status.wallet} onSaved={wallet => setStatus(prev => prev ? { ...prev, wallet } : prev)} />
+          <SpendsCard spends={status.spends ?? []} />
           <DepositsCard status={status} />
-          <LimitsCard wallet={status.wallet} onSaved={wallet => setStatus(prev => prev ? { ...prev, wallet } : prev)} />
         </>
       )}
     </section>
@@ -226,7 +197,8 @@ function DepositsCard({ status }: { status: Status }) {
   );
 }
 
-function LimitsCard({ wallet, onSaved }: { wallet: SwarmWallet; onSaved: (wallet: SwarmWallet) => void }) {
+function LimitsCard({ wallet, spent24h, onSaved }: { wallet: SwarmWallet; spent24h: number; onSaved: (wallet: SwarmWallet) => void }) {
+  const usedPct = Math.min(100, (spent24h / Number(wallet.daily_cap_usd)) * 100 || 0);
   const [maxAction, setMaxAction] = useState(String(wallet.max_action_usd));
   const [dailyCap, setDailyCap] = useState(String(wallet.daily_cap_usd));
   const [saving, setSaving] = useState(false);
@@ -241,11 +213,7 @@ function LimitsCard({ wallet, onSaved }: { wallet: SwarmWallet; onSaved: (wallet
     setSaving(true);
     setMessage(null);
     try {
-      const saved = await callWallet('limits', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ max_action_usd: perAction, daily_cap_usd: perDay }),
-      });
+      const saved = await postWallet('limits', { max_action_usd: perAction, daily_cap_usd: perDay });
       if (saved.wallet) onSaved(saved.wallet);
       setMessage({ ok: true, text: 'Spending limits saved.' });
     } catch (cause) {
@@ -258,7 +226,16 @@ function LimitsCard({ wallet, onSaved }: { wallet: SwarmWallet; onSaved: (wallet
   return (
     <form onSubmit={save} className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6">
       <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Spending limits</p>
-      <p className="mt-1 text-xs text-zinc-500">Automated actions will never exceed these amounts, valued in US dollars.</p>
+      <p className="mt-1 text-xs text-zinc-500">Automated actions will never exceed these amounts, valued in US dollars. Both limits are enforced on the server before any transfer is signed.</p>
+      <div className="mt-4">
+        <div className="flex justify-between text-xs">
+          <span className="text-zinc-400">Used in the last 24 hours</span>
+          <span className="font-mono text-zinc-200">${spent24h.toFixed(2)} / ${Number(wallet.daily_cap_usd).toFixed(2)}</span>
+        </div>
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-800">
+          <div className={`h-full rounded-full transition-all duration-500 ${usedPct >= 90 ? 'bg-amber-400' : 'bg-teal-500'}`} style={{ width: `${usedPct}%` }} />
+        </div>
+      </div>
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
         <label className="block space-y-1.5">
           <span className="text-xs font-medium text-zinc-400">Max per action ($)</span>

@@ -1,5 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { generatePrivateKey, privateKeyToAccount } from "npm:viem@2.21.55/accounts";
+import { getAddress, isAddress } from "npm:viem@2.21.55";
+import { POLYGON_RPCS, TOKENS } from "./chain.ts";
+import { runSweepWorker } from "./worker.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -13,18 +16,7 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
 
-const POLYGON_RPCS = [
-  "https://gateway.tenderly.co/public/polygon",
-  "https://polygon-bor-rpc.publicnode.com",
-  "https://1rpc.io/matic",
-  "https://polygon.drpc.org",
-];
-const TOKENS = [
-  { symbol: "USDC", address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", decimals: 6 },
-  { symbol: "USDC.e", address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", decimals: 6 },
-  { symbol: "USDT", address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", decimals: 6 },
-];
-const WALLET_COLUMNS = "address, chain, max_action_usd, daily_cap_usd, created_at, updated_at";
+const WALLET_COLUMNS = "address, chain, max_action_usd, daily_cap_usd, created_at, updated_at, auto_withdraw_enabled, cold_address, cold_address_set_at, keep_reserve_usd, last_run_at, last_run_result";
 const POLYGONSCAN_API = "https://api.etherscan.io/v2/api";
 const POLYGONSCAN_KEY = Deno.env.get("POLYGON_API_KEY")?.trim() ?? "";
 
@@ -204,10 +196,87 @@ async function updateLimits(req: Request, userId: string): Promise<Response> {
   return json({ wallet: data });
 }
 
+async function updateSettings(req: Request, userId: string) {
+  const body = await req.json().catch(() => null);
+  const enabled = body?.auto_withdraw_enabled;
+  const rawCold = typeof body?.cold_address === "string" ? body.cold_address.trim() : "";
+  const reserve = Number(body?.keep_reserve_usd);
+  if (typeof enabled !== "boolean") return json({ error: "Choose whether auto-withdraw is on or off" }, 400);
+  if (!Number.isFinite(reserve) || reserve < 0 || reserve > 1_000_000) return json({ error: "Reserve must be between $0 and $1,000,000" }, 400);
+  if (rawCold && !isAddress(rawCold)) return json({ error: "That is not a valid Polygon address" }, 400);
+  if (enabled && !rawCold) return json({ error: "Add a cold storage address before turning auto-withdraw on" }, 400);
+
+  const current = await getWallet();
+  if (!current) return json({ error: "Create the swarm wallet first" }, 404);
+  const cold = rawCold ? getAddress(rawCold) : null;
+  if (cold && cold.toLowerCase() === current.address.toLowerCase()) return json({ error: "Cold storage must be a different wallet" }, 400);
+
+  const coldChanged = (cold ?? "").toLowerCase() !== (current.cold_address ?? "").toLowerCase();
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("defi_swarm_wallet")
+    .update({
+      auto_withdraw_enabled: enabled,
+      cold_address: cold,
+      keep_reserve_usd: Math.round(reserve * 100) / 100,
+      updated_at: now,
+      ...(coldChanged ? { cold_address_set_at: cold ? now : null } : {}),
+    })
+    .eq("id", 1)
+    .select(WALLET_COLUMNS)
+    .maybeSingle();
+  if (error) throw new Error(`Settings update failed: ${error.message}`);
+  if (!data) return json({ error: "Create the swarm wallet first" }, 404);
+
+  await supabase.from("audit_log").insert({
+    event_type: coldChanged ? "swarm_cold_address_changed" : "swarm_auto_withdraw_updated",
+    entity_type: "defi_swarm_wallet",
+    entity_id: data.address,
+    message: `Swarm auto-withdraw ${enabled ? "on" : "off"}, reserve ${data.keep_reserve_usd}${coldChanged ? `, cold address set to ${cold ?? "none"}` : ""}`,
+    metadata: { auto_withdraw_enabled: enabled, cold_address: cold, keep_reserve_usd: data.keep_reserve_usd, updated_by: userId },
+  });
+
+  return json({ wallet: data });
+}
+
+async function readSpends() {
+  const { data, error } = await supabase
+    .from("defi_swarm_spends")
+    .select("id, created_at, kind, token, amount_usd, to_address, tx_hash, status, error")
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (error) throw new Error(`Spend history failed: ${error.message}`);
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  const spent24h = (data ?? [])
+    .filter((s) => s.status !== "failed" && new Date(s.created_at).getTime() > since)
+    .reduce((sum, s) => sum + Number(s.amount_usd), 0);
+  return { spends: data ?? [], spent24h: Math.round(spent24h * 100) / 100 };
+}
+
+async function isWorkerCaller(req: Request) {
+  const provided = req.headers.get("x-cron-secret") ?? "";
+  const { data, error } = await supabase.from("internal_secrets").select("value").eq("name", "swarm_worker").maybeSingle();
+  if (error) throw new Error(`Worker secret check failed: ${error.message}`);
+  return Boolean(data && provided && provided === data.value);
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
 
   try {
+    if (req.method === "POST" && new URL(req.url).pathname.endsWith("/swarm-wallet/worker")) {
+      if (!(await isWorkerCaller(req))) return json({ error: "Unauthorized" }, 401);
+      try {
+        return json(await runSweepWorker(supabase));
+      } catch (err) {
+        console.error("worker error", err);
+        await supabase.from("defi_swarm_wallet")
+          .update({ last_run_at: new Date().toISOString(), last_run_result: "Run failed; nothing was sent. Will retry next run." })
+          .eq("id", 1);
+        return json({ error: "Worker run failed" }, 500);
+      }
+    }
+
     const auth = await requireOperator(req);
     if (auth instanceof Response) return auth;
 
@@ -216,9 +285,10 @@ Deno.serve(async (req: Request) => {
     if (req.method === "GET" && path === "/status") {
       const wallet = await getWallet();
       if (!wallet) return json({ wallet: null });
-      const [balances, deposits] = await Promise.all([readBalances(wallet.address), readDeposits(wallet.address)]);
-      return json({ wallet, ...balances, ...deposits });
+      const [balances, deposits, spends] = await Promise.all([readBalances(wallet.address), readDeposits(wallet.address), readSpends()]);
+      return json({ wallet, ...balances, ...deposits, ...spends });
     }
+    if (req.method === "POST" && path === "/settings") return await updateSettings(req, auth.userId);
     if (req.method === "POST" && path === "/create") return await createWallet(auth.userId);
     if (req.method === "POST" && path === "/limits") return await updateLimits(req, auth.userId);
 
