@@ -1,5 +1,5 @@
 import { useCallback, useState, type FormEvent } from 'react';
-import { AlertTriangle, Check, Copy, ExternalLink, KeyRound, Loader2, RefreshCw, ShieldCheck, SlidersHorizontal, Wallet } from 'lucide-react';
+import { AlertTriangle, ArrowDownToLine, Check, Copy, ExternalLink, KeyRound, Loader2, RefreshCw, ShieldCheck, SlidersHorizontal, Wallet } from 'lucide-react';
 import { operatorFetch } from '@/lib/operatorAuth';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 
@@ -11,12 +11,15 @@ interface SwarmWallet {
   created_at: string;
 }
 interface Balance { symbol: string; amount: string }
+interface Deposit { symbol: string; amount: string; hash: string; from: string; at: string }
 interface Status {
   wallet: SwarmWallet | null;
   balances?: Balance[] | null;
   checkedAt?: string;
   source?: string;
   error?: string;
+  deposits?: Deposit[] | null;
+  depositsError?: string;
 }
 
 const addressPattern = /^0x[0-9a-fA-F]{40}$/;
@@ -72,6 +75,7 @@ export default function SwarmWalletSetup() {
         <>
           <DepositCard wallet={status.wallet} />
           <BalancesCard status={status} />
+          <DepositsCard status={status} />
           <LimitsCard wallet={status.wallet} onSaved={wallet => setStatus(prev => prev ? { ...prev, wallet } : prev)} />
         </>
       )}
@@ -187,6 +191,36 @@ function BalancesCard({ status }: { status: Status }) {
         </div>
       ) : (
         <p className="mt-4 text-sm text-zinc-500">{status.error ?? 'Balances will appear after the next refresh.'}</p>
+      )}
+    </div>
+  );
+}
+
+function DepositsCard({ status }: { status: Status }) {
+  const deposits = Array.isArray(status.deposits) ? status.deposits : null;
+  return (
+    <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6">
+      <div className="flex items-center gap-2">
+        <ArrowDownToLine className="h-4 w-4 text-teal-400" />
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Deposit history</p>
+      </div>
+      {deposits === null ? (
+        <p className="mt-4 text-sm text-zinc-500">{status.depositsError ?? 'Deposit history will appear after the next refresh.'}</p>
+      ) : deposits.length === 0 ? (
+        <p className="mt-4 text-sm text-zinc-500">No deposits yet. Funds you send to the address above will show up here.</p>
+      ) : (
+        <ul className="mt-4 divide-y divide-zinc-800/80">
+          {deposits.map(d => (
+            <li key={`${d.hash}-${d.symbol}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-3 text-sm">
+              <span className="font-mono font-semibold text-emerald-400">+{d.amount} {d.symbol}</span>
+              <span className="font-mono text-xs text-zinc-500">from {d.from.slice(0, 8)}…{d.from.slice(-6)}</span>
+              <span className="ml-auto text-xs text-zinc-500">{new Date(d.at).toLocaleString()}</span>
+              <a href={`https://polygonscan.com/tx/${d.hash}`} target="_blank" rel="noopener noreferrer" aria-label="View transaction on PolygonScan" className="text-zinc-500 transition-colors hover:text-teal-300">
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

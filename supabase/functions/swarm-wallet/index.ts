@@ -25,6 +25,8 @@ const TOKENS = [
   { symbol: "USDT", address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", decimals: 6 },
 ];
 const WALLET_COLUMNS = "address, chain, max_action_usd, daily_cap_usd, created_at, updated_at";
+const POLYGONSCAN_API = "https://api.etherscan.io/v2/api";
+const POLYGONSCAN_KEY = Deno.env.get("POLYGON_API_KEY")?.trim() ?? "";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: jsonHeaders });
@@ -88,6 +90,49 @@ async function readBalances(address: string) {
     }
   }
   return { balances: null, error: `Balances unavailable: ${lastError}` };
+}
+
+type ScanTx = { hash: string; from: string; to: string; value: string; timeStamp: string; contractAddress?: string; isError?: string };
+
+async function scanList(action: "txlist" | "tokentx", address: string): Promise<ScanTx[]> {
+  const params = new URLSearchParams({
+    chainid: "137", module: "account", action, address,
+    page: "1", offset: "25", sort: "desc", apikey: POLYGONSCAN_KEY,
+  });
+  const res = await fetch(`${POLYGONSCAN_API}?${params}`, { signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new Error(`PolygonScan HTTP ${res.status}`);
+  const body = await res.json() as { status?: string; message?: string; result?: unknown };
+  if (Array.isArray(body.result)) return body.result as ScanTx[];
+  if (body.message === "No transactions found") return [];
+  throw new Error("PolygonScan rejected the request");
+}
+
+async function readDeposits(address: string) {
+  if (!POLYGONSCAN_KEY) return { deposits: null, depositsError: "Deposit history is not configured" };
+  try {
+    const wallet = address.toLowerCase();
+    const [native, tokens] = await Promise.all([scanList("txlist", address), scanList("tokentx", address)]);
+    const known = new Map(TOKENS.map((t) => [t.address.toLowerCase(), t]));
+    const deposits = [
+      ...native
+        .filter((tx) => tx.to?.toLowerCase() === wallet && tx.isError !== "1" && tx.value !== "0")
+        .map((tx) => ({ symbol: "POL", amount: formatUnits(`0x${BigInt(tx.value).toString(16)}`, 18), tx })),
+      ...tokens
+        .filter((tx) => tx.to?.toLowerCase() === wallet && known.has(tx.contractAddress?.toLowerCase() ?? ""))
+        .map((tx) => {
+          const token = known.get(tx.contractAddress!.toLowerCase())!;
+          return { symbol: token.symbol, amount: formatUnits(`0x${BigInt(tx.value).toString(16)}`, token.decimals), tx };
+        }),
+    ]
+      .filter(({ tx }) => /^0x[0-9a-f]{64}$/i.test(tx.hash) && /^0x[0-9a-f]{40}$/i.test(tx.from))
+      .map(({ symbol, amount, tx }) => ({ symbol, amount, hash: tx.hash, from: tx.from, at: new Date(Number(tx.timeStamp) * 1000).toISOString() }))
+      .sort((a, b) => b.at.localeCompare(a.at))
+      .slice(0, 15);
+    return { deposits };
+  } catch (err) {
+    console.error(err);
+    return { deposits: null, depositsError: "Deposit history is temporarily unavailable" };
+  }
 }
 
 async function getWallet() {
@@ -171,7 +216,8 @@ Deno.serve(async (req: Request) => {
     if (req.method === "GET" && path === "/status") {
       const wallet = await getWallet();
       if (!wallet) return json({ wallet: null });
-      return json({ wallet, ...(await readBalances(wallet.address)) });
+      const [balances, deposits] = await Promise.all([readBalances(wallet.address), readDeposits(wallet.address)]);
+      return json({ wallet, ...balances, ...deposits });
     }
     if (req.method === "POST" && path === "/create") return await createWallet(auth.userId);
     if (req.method === "POST" && path === "/limits") return await updateLimits(req, auth.userId);
