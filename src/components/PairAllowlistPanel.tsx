@@ -54,13 +54,26 @@ export default function PairAllowlistPanel() {
 
   const enabledCount = rows.filter(r => r.enabled).length;
   const enabledCoins = new Set(rows.filter(r => r.enabled).map(r => r.symbol));
+  const authorized = enabledCount > 0;
+  const lightTone = !loaded ? 'bg-zinc-500' : authorized ? 'bg-emerald-400' : 'bg-amber-400';
+  const lightText = !loaded ? 'text-zinc-400' : authorized ? 'text-emerald-400' : 'text-amber-400';
+  const lightLabel = !loaded ? 'Checking' : authorized ? 'Authorized' : 'Not authorized';
 
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/60">
       <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800 px-5 py-4">
         <ListChecks className="h-4 w-4 text-emerald-400" />
         <h3 className="text-sm font-semibold text-zinc-300">Bot Pair Allowlist</h3>
-        <span className="ml-auto text-xs text-zinc-500">{enabledCount} active, all others paused</span>
+        <span role="status" className="ml-auto flex items-center gap-2 text-xs text-zinc-500">
+          <span className="relative flex h-2.5 w-2.5">
+            {authorized && loaded ? (
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+            ) : null}
+            <span className={`relative inline-flex h-2.5 w-2.5 rounded-full transition-colors duration-500 ${lightTone}`} />
+          </span>
+          <span className={`font-medium transition-colors duration-500 ${lightText}`}>{lightLabel}</span>
+          <span>{enabledCount} active, all others paused</span>
+        </span>
       </div>
 
       {error ? (
