@@ -349,10 +349,14 @@ async function submitUsdtWithdrawal(
 
 type SellResult = { coin: string; orderId: string | null; proceeds: number; error: string | null; skipped?: boolean };
 
-async function sellNonUsdtBalances(): Promise<SellResult[]> {
+async function sellNonUsdtBalances(skipCoins: Set<string> = new Set()): Promise<SellResult[]> {
   const balances = await getNonUsdtBalances();
   const results: SellResult[] = [];
   for (const bal of balances) {
+    if (skipCoins.has(bal.coin)) {
+      results.push({ coin: bal.coin, orderId: null, proceeds: 0, error: "Held by an open bot trade", skipped: true });
+      continue;
+    }
     const symbol = `${bal.coin}USDT`;
     const filters = await getSymbolFilters();
     const f = filters.get(symbol);
@@ -728,7 +732,19 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      const sold = (await sellNonUsdtBalances()).filter((s) => s.orderId !== null);
+      const { data: openTrades, error: openTradesError } = await supabase
+        .from("paper_trades")
+        .select("symbol")
+        .eq("is_live", true)
+        .eq("status", "open");
+      if (openTradesError) {
+        return new Response(JSON.stringify({ success: false, error: "Could not load open bot trades; harvest skipped" }), {
+          status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const botCoins = new Set((openTrades ?? []).map((t: { symbol: string }) => t.symbol.replace(/USDT$/, "")));
+
+      const sold = (await sellNonUsdtBalances(botCoins)).filter((s) => s.orderId !== null);
       if (sold.length > 0) {
         await supabase.from("audit_log").insert({
           event_type: "auto_sell",
@@ -740,10 +756,10 @@ Deno.serve(async (req: Request) => {
       }
 
       const usdtBalance = await getUsdtBalance();
-      const reserve = parseFloat(cfg.min_threshold);
+      const reserve = Math.max(parseFloat(cfg.min_threshold) || 0, parseFloat(cfg.trading_reserve_usdt) || 0);
       const harvestAmount = Math.floor((usdtBalance - reserve) * 100) / 100;
       if (!(harvestAmount > 0)) {
-        return new Response(JSON.stringify({ success: true, status: "below_threshold", usdtBalance }), {
+        return new Response(JSON.stringify({ success: true, status: "below_threshold", usdtBalance, reserve }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
