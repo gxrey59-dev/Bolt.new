@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+import { simulateLive } from "./liveStrategy.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -222,6 +223,28 @@ function pathsToSeries(paths: Map<string, number[]>): CandleSeries {
     }));
   }
   return series;
+}
+
+async function fetchHourlyHistory(symbol: string, pages: number): Promise<Candle[]> {
+  const out: Candle[] = [];
+  let endTime: number | undefined;
+  try {
+    for (let p = 0; p < pages; p++) {
+      const q = `symbol=${symbol}&interval=1h&limit=1000${endTime ? `&endTime=${endTime}` : ""}`;
+      const res = await fetch(`${BINANCE_BASE}/api/v3/klines?${q}`);
+      if (!res.ok) break;
+      const data = (await res.json()) as unknown[][];
+      if (data.length === 0) break;
+      const page = data.map((d) => ({
+        open: parseFloat(d[1] as string), high: parseFloat(d[2] as string),
+        low: parseFloat(d[3] as string), close: parseFloat(d[4] as string),
+        volume: parseFloat(d[5] as string), openTime: d[0] as number,
+      }));
+      out.unshift(...page.map(({ openTime: _t, ...c }) => c));
+      endTime = (data[0][0] as number) - 1;
+    }
+  } catch { /* partial history is still usable */ }
+  return out;
 }
 
 // ─── Backtest Engine ───────────────────────────────────────────────
@@ -651,6 +674,35 @@ Deno.serve(async (req: Request) => {
     if (path === "/holdout") {
       const body = await req.json().catch(() => ({}));
       return await handleHoldout(body);
+    }
+
+    if (path === "/live-holdout") {
+      const body = await req.json().catch(() => ({}));
+      const symbols: string[] = body.symbols ?? DEFAULT_HISTORY_SYMBOLS;
+      const pages: number = Math.min(body.pages ?? 4, 6);
+      const feePct: number = body.feePct ?? DEFAULT_FEE_PCT;
+      const startingCapital: number = body.startingCapital ?? 10000;
+      const cfg = {
+        stopLossPct: body.stopLossPct ?? 1,
+        takeProfitPct: body.takeProfitPct ?? 6,
+        maxPositionPct: body.maxPositionPct ?? 10,
+        feePct, startingCapital,
+      };
+      const loaded = await Promise.all(symbols.map(async (s) => ({ symbol: s, candles: await fetchHourlyHistory(s, pages) })));
+      const usable = loaded.filter((h) => h.candles.length >= 200);
+      if (usable.length === 0) return jsonResponse({ error: "Could not load hourly price history" }, 502);
+      const length = Math.min(...usable.map((h) => h.candles.length));
+      const series = new Map<string, Candle[]>();
+      for (const h of usable) series.set(h.symbol, h.candles.slice(h.candles.length - length));
+      const split = Math.floor(length * 0.7);
+      const train = simulateLive(series, { from: 0, to: split }, cfg);
+      const test = simulateLive(series, { from: split, to: length }, cfg);
+      return jsonResponse({
+        symbols: usable.map((h) => h.symbol), bars: length, trainBars: split, testBars: length - split,
+        cfg,
+        train: { ...train, trades: undefined },
+        test: { ...test, trades: undefined },
+      });
     }
 
     if (path === "/results") {
