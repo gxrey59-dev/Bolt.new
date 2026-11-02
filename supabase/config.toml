@@ -13,3 +13,6 @@ verify_jwt = false
 [functions.backtest-engine]
 verify_jwt = false
 
+
+[functions.swarm-wallet]
+verify_jwt = false

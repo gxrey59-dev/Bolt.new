@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback } from 'react';
-import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3, ArrowUpFromLine, Activity } from 'lucide-react';
+import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3, ArrowUpFromLine, Activity, Wallet } from 'lucide-react';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
 import Header from '@/components/Header';
@@ -25,6 +25,7 @@ const CircuitBreakerPanel = lazy(() => import('@/components/CircuitBreakerPanel'
 const LiveTradingDashboard = lazy(() => import('@/components/LiveTradingDashboard'));
 const NFTCollection = lazy(() => import('@/components/NFTCollection'));
 const DeFiSwarmPanel = lazy(() => import('@/components/DeFiSwarmPanel'));
+const SwarmWalletSetup = lazy(() => import('@/components/SwarmWalletSetup'));
 const RevenueCommandCenter = lazy(() => import('@/components/RevenueCommandCenter'));
 const RevenueSprintDashboard = lazy(() => import('@/components/RevenueSprintDashboard'));
 const BillionRoadmap = lazy(() => import('@/components/BillionRoadmap'));
@@ -45,6 +46,7 @@ const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'operations', label: 'Operations', icon: Settings },
   { id: 'nft', label: 'NFT Armory', icon: Gem },
   { id: 'swarm', label: 'DeFi Swarms', icon: Network },
+  { id: 'swarm-wallet', label: 'Swarm Wallet', icon: Wallet },
   { id: 'revenue', label: 'Revenue', icon: Crown },
   { id: 'withdrawal', label: 'Withdrawal', icon: ArrowUpFromLine },
   { id: 'roadmap', label: 'Roadmap', icon: Target },
@@ -211,6 +213,12 @@ export default function App() {
 
           {tab === 'swarm' && (
             <DeFiSwarmPanel />
+          )}
+
+          {tab === 'swarm-wallet' && (
+            <OperatorGate status={operatorStatus}>
+              <SwarmWalletSetup />
+            </OperatorGate>
           )}
 
           {tab === 'revenue' && (

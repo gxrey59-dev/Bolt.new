@@ -20,6 +20,10 @@
     "get-config": {
       "hasChanged": false,
       "hash": "47b5e77867e5bab6dee78fc8a446e0d6a40c9d71a7fe6c7ea80a87ee930248b0"
+    },
+    "swarm-wallet": {
+      "hasChanged": false,
+      "hash": "aa4b133fa0de53390525d4c7d3a28fb2245a01546ae14b41582bf9859a67208a"
     }
   }
 }
