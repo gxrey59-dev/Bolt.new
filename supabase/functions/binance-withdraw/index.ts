@@ -212,6 +212,15 @@ async function getUsdtBalance(): Promise<number> {
   return usdt ? parseFloat(usdt.free) : 0;
 }
 
+async function getUsdtWithdrawRules(network: string): Promise<{ withdrawMin: number; withdrawFee: number; withdrawEnable: boolean } | null> {
+  const result = await binanceSignedCall("/sapi/v1/capital/config/getall", {});
+  if (!result.ok || !Array.isArray(result.data)) return null;
+  const coins = result.data as Array<{ coin: string; networkList?: Array<{ network: string; withdrawEnable: boolean; withdrawFee: string; withdrawMin: string }> }>;
+  const net = coins.find((c) => c.coin === "USDT")?.networkList?.find((n) => n.network === network);
+  if (!net) return null;
+  return { withdrawMin: parseFloat(net.withdrawMin) || 0, withdrawFee: parseFloat(net.withdrawFee) || 0, withdrawEnable: net.withdrawEnable };
+}
+
 // ─── Place spot sell order ──────────────────────────────────────────
 
 async function spotSell(coin: string, quantity: number): Promise<{ orderId: string | null; error: string | null; proceeds: number }> {
@@ -760,6 +769,24 @@ Deno.serve(async (req: Request) => {
       const harvestAmount = Math.floor((usdtBalance - reserve) * 100) / 100;
       if (!(harvestAmount > 0)) {
         return new Response(JSON.stringify({ success: true, status: "below_threshold", usdtBalance, reserve }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const rules = await getUsdtWithdrawRules(cfg.network);
+      if (!rules) {
+        return new Response(JSON.stringify({ success: true, status: "skipped_rules_unavailable", harvestAmount, network: cfg.network }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (!rules.withdrawEnable) {
+        return new Response(JSON.stringify({ success: true, status: "skipped_network_disabled", harvestAmount, network: cfg.network }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const minSendable = Math.max(rules.withdrawMin, rules.withdrawFee);
+      if (harvestAmount < minSendable || harvestAmount <= rules.withdrawFee) {
+        return new Response(JSON.stringify({ success: true, status: "below_withdraw_minimum", harvestAmount, withdrawMin: rules.withdrawMin, withdrawFee: rules.withdrawFee }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
