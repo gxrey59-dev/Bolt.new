@@ -12,6 +12,10 @@ const supabase = createClient(
 );
 
 const BINANCE_BASE = "https://api.binance.us";
+const DEFAULT_FEE_PCT = 0.1;
+const DEFAULT_HISTORY_SYMBOLS = [
+  "BTCUSDT", "DOGEUSDT", "LINKUSDT", "ADAUSDT", "LTCUSDT", "BCHUSDT", "ATOMUSDT", "FILUSDT",
+];
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -45,6 +49,8 @@ interface BacktestResult {
   strategyBreakdown: Record<string, { trades: number; wins: number; pnl: number; winRate: number }>;
   trades: ClosedTrade[];
 }
+interface Range { from: number; to: number; }
+type CandleSeries = Map<string, Candle[]>;
 
 // ─── Technical Indicators ──────────────────────────────────────────
 
@@ -160,7 +166,7 @@ function evaluateStrategies(candles: Candle[], currentPrice: number, params: Bac
   return { side: signals[0].side, strategy: signals[0].strategy };
 }
 
-// ─── Price Path Generation ──────────────────────────────────────────
+// ─── Price Data ────────────────────────────────────────────────────
 
 async function fetchRealHistory(symbol: string): Promise<Candle[]> {
   try {
@@ -207,15 +213,27 @@ function generatePricePath(startPrice: number, mu: number, sigma: number, period
   return prices;
 }
 
+function pathsToSeries(paths: Map<string, number[]>): CandleSeries {
+  const series: CandleSeries = new Map();
+  for (const [sym, prices] of paths) {
+    series.set(sym, prices.map((close, i) => {
+      const prev = i > 0 ? prices[i - 1] : close;
+      return { open: prev, high: Math.max(close, prev) * 1.002, low: Math.min(close, prev) * 0.998, close, volume: 1000 };
+    }));
+  }
+  return series;
+}
+
 // ─── Backtest Engine ───────────────────────────────────────────────
 
 function runSingleBacktest(
-  pricePaths: Map<string, number[]>,
+  series: CandleSeries,
+  range: Range,
   params: BacktestParams,
   startingCapital: number,
+  feePct: number,
 ): BacktestResult {
-  const symbols = Array.from(pricePaths.keys());
-  const totalPeriods = pricePaths.get(symbols[0])?.length ?? 0;
+  const symbols = Array.from(series.keys());
   let equity = startingCapital;
   const openTrades: Trade[] = [];
   const closedTrades: ClosedTrade[] = [];
@@ -223,68 +241,69 @@ function runSingleBacktest(
   let peakEquity = startingCapital, maxDrawdown = 0;
   const candleBuffers = new Map<string, Candle[]>();
   for (const sym of symbols) candleBuffers.set(sym, []);
+  const lastPeriod = range.to - 1;
 
-  for (let period = 0; period < totalPeriods; period++) {
+  const closeTrade = (trade: Trade, exitPrice: number, exitReason: string, period: number) => {
+    const isLong = trade.side === "long";
+    const grossPnl = isLong
+      ? (exitPrice - trade.entryPrice) * trade.quantity
+      : (trade.entryPrice - exitPrice) * trade.quantity;
+    const posVal = trade.entryPrice * trade.quantity;
+    const fees = (feePct / 100) * (posVal + exitPrice * trade.quantity);
+    const pnl = grossPnl - fees;
+    equity += posVal + pnl;
+    closedTrades.push({
+      strategy: trade.strategy, side: trade.side, entryPrice: trade.entryPrice, exitPrice, pnl,
+      pnlPct: (pnl / posVal) * 100, holdPeriods: period - trade.entryPeriod, exitReason, period: trade.entryPeriod,
+    });
+  };
+
+  for (let period = 0; period <= lastPeriod; period++) {
     for (const sym of symbols) {
-      const prices = pricePaths.get(sym)!;
-      const prev = period > 0 ? prices[period - 1] : prices[0];
-      const high = Math.max(prices[period], prev) * 1.002;
-      const low = Math.min(prices[period], prev) * 0.998;
-      candleBuffers.get(sym)!.push({ open: prev, high, low, close: prices[period], volume: 1000 });
       const buf = candleBuffers.get(sym)!;
+      buf.push(series.get(sym)![period]);
       if (buf.length > 100) buf.shift();
     }
 
-    // Check exits on open trades
     for (let i = openTrades.length - 1; i >= 0; i--) {
       const trade = openTrades[i];
-      const cp = pricePaths.get(trade.symbol)![period];
+      const cp = series.get(trade.symbol)![period].close;
       const isLong = trade.side === "long";
-      let shouldClose = false, exitPrice = cp, exitReason = "";
-
-      if (isLong) {
-        if (cp <= trade.stopLoss) { shouldClose = true; exitPrice = trade.stopLoss; exitReason = "stop_loss"; }
-        else if (cp >= trade.takeProfit) { shouldClose = true; exitPrice = trade.takeProfit; exitReason = "take_profit"; }
-      } else {
-        if (cp >= trade.stopLoss) { shouldClose = true; exitPrice = trade.stopLoss; exitReason = "stop_loss"; }
-        else if (cp <= trade.takeProfit) { shouldClose = true; exitPrice = trade.takeProfit; exitReason = "take_profit"; }
-      }
-
-      if (shouldClose) {
-        const hold = period - trade.entryPeriod;
-        const pnl = isLong ? (exitPrice - trade.entryPrice) * trade.quantity : (trade.entryPrice - exitPrice) * trade.quantity;
-        const posVal = trade.entryPrice * trade.quantity;
-        equity += posVal + pnl;
-        closedTrades.push({ strategy: trade.strategy, side: trade.side, entryPrice: trade.entryPrice, exitPrice, pnl, pnlPct: (pnl / posVal) * 100, holdPeriods: hold, exitReason, period: trade.entryPeriod });
+      const stopHit = isLong ? cp <= trade.stopLoss : cp >= trade.stopLoss;
+      const targetHit = isLong ? cp >= trade.takeProfit : cp <= trade.takeProfit;
+      if (stopHit) {
+        closeTrade(trade, trade.stopLoss, "stop_loss", period);
+        openTrades.splice(i, 1);
+      } else if (targetHit) {
+        closeTrade(trade, trade.takeProfit, "take_profit", period);
         openTrades.splice(i, 1);
       }
     }
 
-    // Check for new entries
-    for (const sym of symbols) {
-      const candles = candleBuffers.get(sym)!;
-      if (candles.length < 50) continue;
-      const cp = pricePaths.get(sym)![period];
-      const hasOpen = openTrades.some((t) => t.symbol === sym);
-      if (hasOpen) continue;
-      const signal = evaluateStrategies(candles, cp, params);
-      if (signal && equity > 10) {
-        const posVal = equity * (params.maxPositionPct / 100);
-        const qty = posVal / cp;
-        const isLong = signal.side === "long";
-        openTrades.push({
-          side: signal.side, strategy: signal.strategy, symbol: sym,
-          entryPrice: cp, entryPeriod: period, quantity: qty,
-          stopLoss: isLong ? cp * (1 - params.stopLossPct / 100) : cp * (1 + params.stopLossPct / 100),
-          takeProfit: isLong ? cp * (1 + params.takeProfitPct / 100) : cp * (1 - params.takeProfitPct / 100),
-        });
-        equity -= posVal;
+    if (period >= range.from) {
+      for (const sym of symbols) {
+        const candles = candleBuffers.get(sym)!;
+        if (candles.length < 50) continue;
+        if (openTrades.some((t) => t.symbol === sym)) continue;
+        const cp = series.get(sym)![period].close;
+        const signal = evaluateStrategies(candles, cp, params);
+        if (signal && equity > 10) {
+          const posVal = equity * (params.maxPositionPct / 100);
+          const qty = posVal / cp;
+          const isLong = signal.side === "long";
+          openTrades.push({
+            side: signal.side, strategy: signal.strategy, symbol: sym,
+            entryPrice: cp, entryPeriod: period, quantity: qty,
+            stopLoss: isLong ? cp * (1 - params.stopLossPct / 100) : cp * (1 + params.stopLossPct / 100),
+            takeProfit: isLong ? cp * (1 + params.takeProfitPct / 100) : cp * (1 - params.takeProfitPct / 100),
+          });
+          equity -= posVal;
+        }
       }
     }
 
-    // Track equity
     const totalEquity = equity + openTrades.reduce((s, t) => {
-      const cp = pricePaths.get(t.symbol)![period];
+      const cp = series.get(t.symbol)![period].close;
       return s + (t.side === "long" ? (cp - t.entryPrice) : (t.entryPrice - cp)) * t.quantity;
     }, 0);
     equityCurve.push({ period, equity: totalEquity });
@@ -293,14 +312,8 @@ function runSingleBacktest(
     if (dd > maxDrawdown) maxDrawdown = dd;
   }
 
-  // Close remaining
-  for (const trade of openTrades) {
-    const lastPrice = pricePaths.get(trade.symbol)![totalPeriods - 1];
-    const isLong = trade.side === "long";
-    const pnl = isLong ? (lastPrice - trade.entryPrice) * trade.quantity : (trade.entryPrice - lastPrice) * trade.quantity;
-    const posVal = trade.entryPrice * trade.quantity;
-    equity += posVal + pnl;
-    closedTrades.push({ strategy: trade.strategy, side: trade.side, entryPrice: trade.entryPrice, exitPrice: lastPrice, pnl, pnlPct: (pnl / posVal) * 100, holdPeriods: totalPeriods - 1 - trade.entryPeriod, exitReason: "end_of_sim", period: trade.entryPeriod });
+  for (const trade of [...openTrades]) {
+    closeTrade(trade, series.get(trade.symbol)![lastPeriod].close, "end_of_sim", lastPeriod);
   }
 
   const wins = closedTrades.filter((t) => t.pnl >= 0);
@@ -308,7 +321,7 @@ function runSingleBacktest(
   const totalWinPnl = wins.reduce((s, t) => s + t.pnl, 0);
   const totalLossPnl = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
   const totalReturnPct = ((equity - startingCapital) / startingCapital) * 100;
-  const years = totalPeriods / 365;
+  const years = (range.to - range.from) / 365;
   const annualizedReturnPct = years > 0 && equity > 0 ? (Math.pow(equity / startingCapital, 1 / years) - 1) * 100 : 0;
 
   const returns = closedTrades.map((t) => t.pnlPct / 100);
@@ -354,12 +367,14 @@ function scoreResult(r: BacktestResult): number {
 }
 
 function optimizeParams(
-  pricePaths: Map<string, number[]>,
+  series: CandleSeries,
+  range: Range,
   base: BacktestParams,
   startingCapital: number,
+  feePct: number,
 ): { params: BacktestParams; result: BacktestResult } {
   let best = { ...base };
-  let bestResult = runSingleBacktest(pricePaths, best, startingCapital);
+  let bestResult = runSingleBacktest(series, range, best, startingCapital, feePct);
   let bestScore = scoreResult(bestResult);
 
   const paramGrids: Record<string, number[]> = {
@@ -370,19 +385,16 @@ function optimizeParams(
     momentumLookback: [3, 5, 8, 12],
   };
 
-  // Coordinate descent: optimize one parameter at a time, 1 round
-  for (let round = 0; round < 1; round++) {
-    for (const [key, values] of Object.entries(paramGrids)) {
-      for (const val of values) {
-        if (key === "takeProfitPct" && val <= best.stopLossPct) continue;
-        const candidate = { ...best, [key]: val };
-        const result = runSingleBacktest(pricePaths, candidate, startingCapital);
-        const score = scoreResult(result);
-        if (score > bestScore) {
-          bestScore = score;
-          best = candidate;
-          bestResult = result;
-        }
+  for (const [key, values] of Object.entries(paramGrids)) {
+    for (const val of values) {
+      if (key === "takeProfitPct" && val <= best.stopLossPct) continue;
+      const candidate = { ...best, [key]: val };
+      const result = runSingleBacktest(series, range, candidate, startingCapital, feePct);
+      const score = scoreResult(result);
+      if (score > bestScore) {
+        bestScore = score;
+        best = candidate;
+        bestResult = result;
       }
     }
   }
@@ -390,7 +402,239 @@ function optimizeParams(
   return { params: best, result: bestResult };
 }
 
-// ─── Main Handler ──────────────────────────────────────────────────
+// ─── Persistence & Response Shapes ─────────────────────────────────
+
+function summarize(r: BacktestResult) {
+  return {
+    finalEquity: r.finalEquity,
+    totalReturnPct: r.totalReturnPct,
+    annualizedReturnPct: r.annualizedReturnPct,
+    maxDrawdownPct: r.maxDrawdownPct,
+    sharpeRatio: r.sharpeRatio,
+    sortinoRatio: r.sortinoRatio,
+    totalTrades: r.totalTrades,
+    winningTrades: r.winningTrades,
+    losingTrades: r.losingTrades,
+    winRate: r.winRate,
+    avgWin: r.avgWin,
+    avgLoss: r.avgLoss,
+    profitFactor: r.profitFactor,
+    bestTradePct: r.bestTradePct,
+    worstTradePct: r.worstTradePct,
+    avgHoldPeriods: r.avgHoldPeriods,
+  };
+}
+
+function runColumns(r: BacktestResult) {
+  return {
+    final_equity: r.finalEquity,
+    total_return_pct: r.totalReturnPct,
+    annualized_return_pct: r.annualizedReturnPct,
+    max_drawdown_pct: r.maxDrawdownPct,
+    sharpe_ratio: r.sharpeRatio,
+    sortino_ratio: r.sortinoRatio,
+    total_trades: r.totalTrades,
+    winning_trades: r.winningTrades,
+    losing_trades: r.losingTrades,
+    win_rate: r.winRate,
+    avg_win: r.avgWin,
+    avg_loss: r.avgLoss,
+    profit_factor: r.profitFactor,
+    best_trade_pct: r.bestTradePct,
+    worst_trade_pct: r.worstTradePct,
+    avg_hold_periods: r.avgHoldPeriods,
+    equity_curve: r.equityCurve,
+    strategy_breakdown: r.strategyBreakdown,
+  };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+}
+
+// ─── Routes ────────────────────────────────────────────────────────
+
+async function handleSimulation(body: Record<string, any>): Promise<Response> {
+  const years: number = body.years ?? 50;
+  const iterations: number = Math.min(body.iterations ?? 3, 5);
+  const startingCapital: number = body.startingCapital ?? 10000;
+  const optimize: boolean = body.optimize ?? true;
+  const feePct: number = body.feePct ?? DEFAULT_FEE_PCT;
+  const symbols: string[] = body.symbols ?? ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+
+  const { data: runRecord } = await supabase.from("backtest_runs").insert({
+    label: `${years}-Year Monte Carlo${optimize ? " + Optimization" : ""}`,
+    years, iterations, starting_capital: startingCapital, status: "running", strategy_params: body.params ?? {},
+  }).select().single();
+  const runId = runRecord.id;
+
+  const calibrationData = new Map<string, { mu: number; sigma: number; startPrice: number }>();
+  for (const sym of symbols) {
+    calibrationData.set(sym, calibrateGBM(await fetchRealHistory(sym)));
+  }
+
+  const periodsPerIteration = Math.min(years * 365, 2000);
+  const actualYears = periodsPerIteration / 365;
+  const range: Range = { from: 0, to: periodsPerIteration };
+
+  const baseParams: BacktestParams = {
+    rsiOversold: body.params?.rsiOversold ?? 30,
+    rsiOverbought: body.params?.rsiOverbought ?? 70,
+    macdThreshold: body.params?.macdThreshold ?? 0,
+    momentumLookback: body.params?.momentumLookback ?? 5,
+    stopLossPct: body.params?.stopLossPct ?? 2,
+    takeProfitPct: body.params?.takeProfitPct ?? 4,
+    maxPositionPct: body.params?.maxPositionPct ?? 10,
+    activeStrategies: body.params?.activeStrategies ?? [
+      "rsi_oversold", "rsi_overbought", "macd_crossover", "momentum_breakout", "mean_reversion",
+    ],
+  };
+
+  let bestResult: BacktestResult | null = null;
+  let worstResult: BacktestResult | null = null;
+  let sumEquity = 0, sumDD = 0, sumSharpe = 0, sumTrades = 0, sumWinRate = 0;
+
+  for (let iter = 0; iter < iterations; iter++) {
+    const rng = makeRng(iter * 1000 + 42);
+    const pricePaths = new Map<string, number[]>();
+    for (const [sym, cal] of calibrationData) {
+      pricePaths.set(sym, generatePricePath(cal.startPrice, cal.mu, cal.sigma, periodsPerIteration, rng));
+    }
+    const result = runSingleBacktest(pathsToSeries(pricePaths), range, baseParams, startingCapital, feePct);
+    if (!bestResult || scoreResult(result) > scoreResult(bestResult)) bestResult = result;
+    if (!worstResult || scoreResult(result) < scoreResult(worstResult)) worstResult = result;
+    sumEquity += result.finalEquity;
+    sumDD += result.maxDrawdownPct;
+    sumSharpe += result.sharpeRatio;
+    sumTrades += result.totalTrades;
+    sumWinRate += result.winRate;
+  }
+
+  const mcAvg = {
+    finalEquity: sumEquity / iterations,
+    maxDrawdownPct: sumDD / iterations,
+    sharpeRatio: sumSharpe / iterations,
+    totalTrades: Math.round(sumTrades / iterations),
+    winRate: sumWinRate / iterations,
+  };
+
+  let optimizedParams = baseParams;
+  let optimizedResult = bestResult!;
+
+  if (optimize) {
+    const rng = makeRng(42);
+    const optPaths = new Map<string, number[]>();
+    for (const [sym, cal] of calibrationData) {
+      optPaths.set(sym, generatePricePath(cal.startPrice, cal.mu, cal.sigma, periodsPerIteration, rng));
+    }
+    const opt = optimizeParams(pathsToSeries(optPaths), range, baseParams, startingCapital, feePct);
+    optimizedParams = opt.params;
+    optimizedResult = opt.result;
+  }
+
+  const sampleTrades = optimizedResult.trades.slice(0, 200);
+  if (sampleTrades.length > 0) {
+    const rows = sampleTrades.map((t) => ({
+      run_id: runId, iteration: 0, symbol: "MIXED", side: t.side, strategy: t.strategy,
+      entry_price: t.entryPrice, exit_price: t.exitPrice, pnl: t.pnl, pnl_pct: t.pnlPct,
+      hold_periods: t.holdPeriods, exit_reason: t.exitReason, period: t.period,
+    }));
+    for (let i = 0; i < rows.length; i += 100) {
+      await supabase.from("backtest_trades").insert(rows.slice(i, i + 100));
+    }
+  }
+
+  await supabase.from("backtest_runs").update({
+    ...runColumns(optimizedResult),
+    strategy_params: { base: baseParams, optimized: optimizedParams, feePct },
+    status: "completed",
+  }).eq("id", runId);
+
+  await supabase.from("audit_log").insert({
+    event_type: "backtest_complete", entity_type: "backtest_runs", entity_id: runId,
+    message: `${actualYears.toFixed(0)}yr backtest: ${optimizedResult.totalTrades} trades, ${optimizedResult.totalReturnPct.toFixed(1)}% return, Sharpe ${optimizedResult.sharpeRatio.toFixed(2)}, DD ${optimizedResult.maxDrawdownPct.toFixed(1)}%`,
+    metadata: { run_id: runId, years: actualYears, iterations, optimized: optimize, feePct },
+  });
+
+  return jsonResponse({
+    runId, years: actualYears, iterations, feePct, baseParams, optimizedParams,
+    optimized: { ...summarize(optimizedResult), strategyBreakdown: optimizedResult.strategyBreakdown, equityCurve: optimizedResult.equityCurve },
+    monteCarlo: {
+      best: { finalEquity: bestResult!.finalEquity, sharpeRatio: bestResult!.sharpeRatio, maxDrawdownPct: bestResult!.maxDrawdownPct },
+      worst: { finalEquity: worstResult!.finalEquity, sharpeRatio: worstResult!.sharpeRatio, maxDrawdownPct: worstResult!.maxDrawdownPct },
+      average: mcAvg,
+    },
+  });
+}
+
+async function handleHoldout(body: Record<string, any>): Promise<Response> {
+  const symbols: string[] = body.symbols ?? DEFAULT_HISTORY_SYMBOLS;
+  const startingCapital: number = body.startingCapital ?? 10000;
+  const feePct: number = body.feePct ?? DEFAULT_FEE_PCT;
+  const trainFraction: number = Math.min(Math.max(body.trainFraction ?? 0.7, 0.3), 0.9);
+
+  const histories = await Promise.all(symbols.map(async (s) => ({ symbol: s, candles: await fetchRealHistory(s) })));
+  const usable = histories.filter((h) => h.candles.length >= 200);
+  if (usable.length === 0) return jsonResponse({ error: "Could not load price history from the exchange" }, 502);
+
+  const length = Math.min(...usable.map((h) => h.candles.length));
+  const series: CandleSeries = new Map();
+  for (const h of usable) series.set(h.symbol, h.candles.slice(h.candles.length - length));
+
+  const split = Math.floor(length * trainFraction);
+  const trainRange: Range = { from: 0, to: split };
+  const testRange: Range = { from: split, to: length };
+
+  const baseParams: BacktestParams = {
+    rsiOversold: body.params?.rsiOversold ?? 30,
+    rsiOverbought: body.params?.rsiOverbought ?? 70,
+    macdThreshold: body.params?.macdThreshold ?? 0,
+    momentumLookback: body.params?.momentumLookback ?? 5,
+    stopLossPct: body.params?.stopLossPct ?? 2,
+    takeProfitPct: body.params?.takeProfitPct ?? 4,
+    maxPositionPct: body.params?.maxPositionPct ?? 10,
+    activeStrategies: body.params?.activeStrategies ?? [
+      "rsi_oversold", "rsi_overbought", "macd_crossover", "momentum_breakout", "mean_reversion",
+    ],
+  };
+
+  const optimized = optimizeParams(series, trainRange, baseParams, startingCapital, feePct);
+  const testBase = runSingleBacktest(series, testRange, baseParams, startingCapital, feePct);
+  const testBaseNoFees = runSingleBacktest(series, testRange, baseParams, startingCapital, 0);
+  const testOptimized = runSingleBacktest(series, testRange, optimized.params, startingCapital, feePct);
+  const trainOptimized = optimized.result;
+
+  const symbolsUsed = usable.map((h) => h.symbol);
+  const { data: runRecord, error: runError } = await supabase.from("backtest_runs").insert({
+    label: `Holdout test on real history (${feePct}% fees)`,
+    years: Math.max(1, Math.round((testRange.to - testRange.from) / 365)),
+    iterations: 1,
+    starting_capital: startingCapital,
+    status: "completed",
+    strategy_params: {
+      mode: "holdout", symbols: symbolsUsed, feePct, trainFraction,
+      trainBars: trainRange.to, testBars: testRange.to - testRange.from,
+      base: baseParams, optimized: optimized.params,
+      test: { base: summarize(testBase), baseNoFees: summarize(testBaseNoFees), optimized: summarize(testOptimized) },
+      train: { optimized: summarize(trainOptimized) },
+    },
+    ...runColumns(testOptimized),
+  }).select().single();
+
+  if (runError) console.error("holdout run save failed:", runError.message);
+
+  return jsonResponse({
+    runId: runRecord?.id ?? null,
+    symbols: symbolsUsed,
+    feePct,
+    trainBars: trainRange.to,
+    testBars: testRange.to - testRange.from,
+    baseParams,
+    optimizedParams: optimized.params,
+    train: { optimized: summarize(trainOptimized) },
+    test: { base: summarize(testBase), baseNoFees: summarize(testBaseNoFees), optimized: summarize(testOptimized) },
+  });
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
@@ -401,174 +645,29 @@ Deno.serve(async (req: Request) => {
 
     if (path === "/run") {
       const body = await req.json().catch(() => ({}));
-      const years: number = body.years ?? 50;
-      const iterations: number = Math.min(body.iterations ?? 3, 5);
-      const startingCapital: number = body.startingCapital ?? 10000;
-      const optimize: boolean = body.optimize ?? true;
-      const symbols: string[] = body.symbols ?? ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+      return await handleSimulation(body);
+    }
 
-      const { data: runRecord } = await supabase.from("backtest_runs").insert({
-        label: `${years}-Year Monte Carlo${optimize ? " + Optimization" : ""}`,
-        years, iterations, starting_capital: startingCapital, status: "running", strategy_params: body.params ?? {},
-      }).select().single();
-      const runId = runRecord.id;
-
-      // Fetch real history to calibrate GBM
-      const calibrationData = new Map<string, { mu: number; sigma: number; startPrice: number }>();
-      for (const sym of symbols) {
-        calibrationData.set(sym, calibrateGBM(await fetchRealHistory(sym)));
-      }
-
-      // Daily candles: 50 years = ~18,250 periods. Cap at 5000 for performance.
-      const periodsPerIteration = Math.min(years * 365, 2000);
-      const actualYears = periodsPerIteration / 365;
-
-      const baseParams: BacktestParams = {
-        rsiOversold: body.params?.rsiOversold ?? 30,
-        rsiOverbought: body.params?.rsiOverbought ?? 70,
-        macdThreshold: body.params?.macdThreshold ?? 0,
-        momentumLookback: body.params?.momentumLookback ?? 5,
-        stopLossPct: body.params?.stopLossPct ?? 2,
-        takeProfitPct: body.params?.takeProfitPct ?? 4,
-        maxPositionPct: body.params?.maxPositionPct ?? 10,
-        activeStrategies: body.params?.activeStrategies ?? [
-          "rsi_oversold", "rsi_overbought", "macd_crossover", "momentum_breakout", "mean_reversion",
-        ],
-      };
-
-      // Monte Carlo with base params
-      let bestResult: BacktestResult | null = null;
-      let worstResult: BacktestResult | null = null;
-      let sumEquity = 0, sumDD = 0, sumSharpe = 0, sumTrades = 0, sumWinRate = 0;
-
-      for (let iter = 0; iter < iterations; iter++) {
-        const rng = makeRng(iter * 1000 + 42);
-        const pricePaths = new Map<string, number[]>();
-        for (const [sym, cal] of calibrationData) {
-          pricePaths.set(sym, generatePricePath(cal.startPrice, cal.mu, cal.sigma, periodsPerIteration, rng));
-        }
-        const result = runSingleBacktest(pricePaths, baseParams, startingCapital);
-        if (!bestResult || scoreResult(result) > scoreResult(bestResult)) bestResult = result;
-        if (!worstResult || scoreResult(result) < scoreResult(worstResult)) worstResult = result;
-        sumEquity += result.finalEquity;
-        sumDD += result.maxDrawdownPct;
-        sumSharpe += result.sharpeRatio;
-        sumTrades += result.totalTrades;
-        sumWinRate += result.winRate;
-      }
-
-      const mcAvg = {
-        finalEquity: sumEquity / iterations,
-        maxDrawdownPct: sumDD / iterations,
-        sharpeRatio: sumSharpe / iterations,
-        totalTrades: Math.round(sumTrades / iterations),
-        winRate: sumWinRate / iterations,
-      };
-
-      // Optimize on a fixed seed path
-      let optimizedParams = baseParams;
-      let optimizedResult = bestResult!;
-
-      if (optimize) {
-        const rng = makeRng(42);
-        const optPaths = new Map<string, number[]>();
-        for (const [sym, cal] of calibrationData) {
-          optPaths.set(sym, generatePricePath(cal.startPrice, cal.mu, cal.sigma, periodsPerIteration, rng));
-        }
-        const opt = optimizeParams(optPaths, baseParams, startingCapital);
-        optimizedParams = opt.params;
-        optimizedResult = opt.result;
-      }
-
-      // Store trades (limit 200)
-      const sampleTrades = optimizedResult.trades.slice(0, 200);
-      if (sampleTrades.length > 0) {
-        const rows = sampleTrades.map((t) => ({
-          run_id: runId, iteration: 0, symbol: "MIXED", side: t.side, strategy: t.strategy,
-          entry_price: t.entryPrice, exit_price: t.exitPrice, pnl: t.pnl, pnl_pct: t.pnlPct,
-          hold_periods: t.holdPeriods, exit_reason: t.exitReason, period: t.period,
-        }));
-        for (let i = 0; i < rows.length; i += 100) {
-          await supabase.from("backtest_trades").insert(rows.slice(i, i + 100));
-        }
-      }
-
-      await supabase.from("backtest_runs").update({
-        final_equity: optimizedResult.finalEquity,
-        total_return_pct: optimizedResult.totalReturnPct,
-        annualized_return_pct: optimizedResult.annualizedReturnPct,
-        max_drawdown_pct: optimizedResult.maxDrawdownPct,
-        sharpe_ratio: optimizedResult.sharpeRatio,
-        sortino_ratio: optimizedResult.sortinoRatio,
-        total_trades: optimizedResult.totalTrades,
-        winning_trades: optimizedResult.winningTrades,
-        losing_trades: optimizedResult.losingTrades,
-        win_rate: optimizedResult.winRate,
-        avg_win: optimizedResult.avgWin, avg_loss: optimizedResult.avgLoss,
-        profit_factor: optimizedResult.profitFactor,
-        best_trade_pct: optimizedResult.bestTradePct,
-        worst_trade_pct: optimizedResult.worstTradePct,
-        avg_hold_periods: optimizedResult.avgHoldPeriods,
-        strategy_params: { base: baseParams, optimized: optimizedParams },
-        equity_curve: optimizedResult.equityCurve,
-        strategy_breakdown: optimizedResult.strategyBreakdown,
-        status: "completed",
-      }).eq("id", runId);
-
-      await supabase.from("audit_log").insert({
-        event_type: "backtest_complete", entity_type: "backtest_runs", entity_id: runId,
-        message: `${actualYears.toFixed(0)}yr backtest: ${optimizedResult.totalTrades} trades, ${optimizedResult.totalReturnPct.toFixed(1)}% return, Sharpe ${optimizedResult.sharpeRatio.toFixed(2)}, DD ${optimizedResult.maxDrawdownPct.toFixed(1)}%`,
-        metadata: { run_id: runId, years: actualYears, iterations, optimized: optimize },
-      });
-
-      return new Response(JSON.stringify({
-        runId, years: actualYears, iterations, baseParams, optimizedParams,
-        optimized: {
-          finalEquity: optimizedResult.finalEquity,
-          totalReturnPct: optimizedResult.totalReturnPct,
-          annualizedReturnPct: optimizedResult.annualizedReturnPct,
-          maxDrawdownPct: optimizedResult.maxDrawdownPct,
-          sharpeRatio: optimizedResult.sharpeRatio,
-          sortinoRatio: optimizedResult.sortinoRatio,
-          totalTrades: optimizedResult.totalTrades,
-          winningTrades: optimizedResult.winningTrades,
-          losingTrades: optimizedResult.losingTrades,
-          winRate: optimizedResult.winRate,
-          avgWin: optimizedResult.avgWin, avgLoss: optimizedResult.avgLoss,
-          profitFactor: optimizedResult.profitFactor,
-          bestTradePct: optimizedResult.bestTradePct,
-          worstTradePct: optimizedResult.worstTradePct,
-          avgHoldPeriods: optimizedResult.avgHoldPeriods,
-          strategyBreakdown: optimizedResult.strategyBreakdown,
-          equityCurve: optimizedResult.equityCurve,
-        },
-        monteCarlo: {
-          best: { finalEquity: bestResult!.finalEquity, sharpeRatio: bestResult!.sharpeRatio, maxDrawdownPct: bestResult!.maxDrawdownPct },
-          worst: { finalEquity: worstResult!.finalEquity, sharpeRatio: worstResult!.sharpeRatio, maxDrawdownPct: worstResult!.maxDrawdownPct },
-          average: mcAvg,
-        },
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    if (path === "/holdout") {
+      const body = await req.json().catch(() => ({}));
+      return await handleHoldout(body);
     }
 
     if (path === "/results") {
       const { data: runs } = await supabase.from("backtest_runs").select("*").order("created_at", { ascending: false }).limit(10);
-      return new Response(JSON.stringify({ runs: runs ?? [] }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return jsonResponse({ runs: runs ?? [] });
     }
 
     if (path === "/trades") {
       const runId = url.searchParams.get("runId");
-      if (!runId) return new Response(JSON.stringify({ error: "Missing runId" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      if (!runId) return jsonResponse({ error: "Missing runId" }, 400);
       const { data: trades } = await supabase.from("backtest_trades").select("*").eq("run_id", runId).order("period", { ascending: true }).limit(500);
-      return new Response(JSON.stringify({ trades: trades ?? [] }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return jsonResponse({ trades: trades ?? [] });
     }
 
-    return new Response(JSON.stringify({ error: "Unknown route. Use /run, /results, or /trades" }), {
-      status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return jsonResponse({ error: "Unknown route. Use /run, /holdout, /results, or /trades" }, 404);
   } catch (err) {
     console.error("backtest-engine error:", err);
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return jsonResponse({ error: err.message }, 500);
   }
 });
