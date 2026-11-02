@@ -345,6 +345,33 @@ async function submitUsdtWithdrawal(
   }), { headers: jsonHeaders });
 }
 
+// ─── Sell every non-USDT balance to USDT ───────────────────────────
+
+type SellResult = { coin: string; orderId: string | null; proceeds: number; error: string | null; skipped?: boolean };
+
+async function sellNonUsdtBalances(): Promise<SellResult[]> {
+  const balances = await getNonUsdtBalances();
+  const results: SellResult[] = [];
+  for (const bal of balances) {
+    const symbol = `${bal.coin}USDT`;
+    const filters = await getSymbolFilters();
+    const f = filters.get(symbol);
+
+    if (!f) {
+      results.push({ coin: bal.coin, orderId: null, proceeds: 0, error: `No ${symbol} trading pair`, skipped: true });
+      continue;
+    }
+    if (bal.free * 1 < f.minNotional && bal.free < f.minQty) {
+      results.push({ coin: bal.coin, orderId: null, proceeds: 0, error: `Balance too small to sell`, skipped: true });
+      continue;
+    }
+
+    const result = await spotSell(bal.coin, bal.free);
+    results.push({ coin: bal.coin, orderId: result.orderId, proceeds: result.proceeds, error: result.error });
+  }
+  return results;
+}
+
 // ─── Main Handler ───────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -534,39 +561,9 @@ Deno.serve(async (req: Request) => {
           .eq("id", withdrawalId);
       }
 
-      // Step 1: Get all non-USDT balances
-      const balances = await getNonUsdtBalances();
       const usdtBefore = await getUsdtBalance();
-
-      const sellResults: { coin: string; orderId: string | null; proceeds: number; error: string | null; skipped?: boolean }[] = [];
-      let totalErrors = 0;
-
-      // Step 2: Sell each non-USDT coin to USDT via spot market order
-      for (const bal of balances) {
-        const symbol = `${bal.coin}USDT`;
-        const filters = await getSymbolFilters();
-        const f = filters.get(symbol);
-
-        // Skip if no trading pair or below minimum
-        if (!f) {
-          sellResults.push({ coin: bal.coin, orderId: null, proceeds: 0, error: `No ${symbol} trading pair`, skipped: true });
-          totalErrors++;
-          continue;
-        }
-        if (bal.free * 1 < f.minNotional && bal.free < f.minQty) {
-          sellResults.push({ coin: bal.coin, orderId: null, proceeds: 0, error: `Balance too small to sell`, skipped: true });
-          continue;
-        }
-
-        const result = await spotSell(bal.coin, bal.free);
-        sellResults.push({
-          coin: bal.coin,
-          orderId: result.orderId,
-          proceeds: result.proceeds,
-          error: result.error,
-        });
-        if (result.error) totalErrors++;
-      }
+      const sellResults = await sellNonUsdtBalances();
+      const totalErrors = sellResults.filter((s) => s.error).length;
 
       const usdtAfter = await getUsdtBalance();
       const usdtGained = usdtAfter - usdtBefore;
@@ -728,6 +725,17 @@ Deno.serve(async (req: Request) => {
       if (!cfg.armed) {
         return new Response(JSON.stringify({ success: true, status: "disarmed" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const sold = (await sellNonUsdtBalances()).filter((s) => s.orderId !== null);
+      if (sold.length > 0) {
+        await supabase.from("audit_log").insert({
+          event_type: "auto_sell",
+          entity_type: "withdrawals",
+          entity_id: "harvest",
+          message: `Auto-sell before harvest: sold ${sold.map((s) => s.coin).join(", ")} to USDT`,
+          metadata: { coins_sold: sold.map((s) => ({ coin: s.coin, orderId: s.orderId, proceeds: s.proceeds })) },
         });
       }
 
