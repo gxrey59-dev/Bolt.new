@@ -23,12 +23,21 @@ const RPC_ENDPOINTS = [
   'https://gateway.tenderly.co/public/polygon',
   'https://api.zan.top/polygon-mainnet',
   'https://polygon-bor-rpc.publicnode.com',
-  'https://polygon-rpc.com',
   'https://1rpc.io/matic',
   'https://polygon.drpc.org',
   'https://polygon.api.onfinality.io/public',
 ];
 const addressPattern = /^0x[0-9a-fA-F]{40}$/;
+const WALLET_STORAGE_KEY = 'defi-monitor-wallet';
+
+function initialWallet(): string {
+  try {
+    const saved = localStorage.getItem(WALLET_STORAGE_KEY)?.trim() ?? '';
+    return addressPattern.test(saved) && !/^0x0{40}$/i.test(saved) ? saved : DEFAULT_WALLET;
+  } catch {
+    return DEFAULT_WALLET;
+  }
+}
 
 type WalletProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -289,7 +298,7 @@ async function readEngineWithFailover(config: EngineConfig, wallet: string, sign
 }
 
 export default function DeFiSwarmPanel() {
-  const [wallet, setWallet] = useState(DEFAULT_WALLET);
+  const [wallet, setWallet] = useState(initialWallet);
   const [running, setRunning] = useState(true);
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -312,7 +321,7 @@ export default function DeFiSwarmPanel() {
     try {
       const normalized = validateWallet(wallet);
       setWallet(normalized);
-      localStorage.setItem('defi-monitor-wallet', normalized);
+      localStorage.setItem(WALLET_STORAGE_KEY, normalized);
       setError('');
       setRunning(true);
       setRefresh(value => value + 1);
@@ -332,7 +341,7 @@ export default function DeFiSwarmPanel() {
       const account = validateWallet(accounts[0]);
       providerRef.current = provider;
       setWallet(account);
-      localStorage.setItem('defi-monitor-wallet', account);
+      localStorage.setItem(WALLET_STORAGE_KEY, account);
       setError('');
       setRunning(true);
       setRefresh(value => value + 1);
