@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useCallback } from 'react';
+import { lazy, Suspense, useState, useCallback, useEffect } from 'react';
 import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3, ArrowUpFromLine, Activity, Wallet } from 'lucide-react';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
@@ -54,8 +54,29 @@ const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'roadmap', label: 'Roadmap', icon: Target },
 ];
 
+function tabFromHash(): TabId | null {
+  const id = window.location.hash.replace(/^#/, '') as TabId;
+  return TABS.some(t => t.id === id) ? id : null;
+}
+
 export default function App() {
-  const [tab, setTab] = useState<TabId>('swarm');
+  const [tab, setTab] = useState<TabId>(() => tabFromHash() ?? 'swarm');
+
+  useEffect(() => {
+    const sync = () => {
+      const fromHash = tabFromHash();
+      if (fromHash) setTab(fromHash);
+    };
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+
+  function switchTab(next: TabId) {
+    setTab(next);
+    if (window.location.hash !== `#${next}`) {
+      window.history.replaceState(null, '', `#${next}`);
+    }
+  }
   const [factions, setFactions] = useState<Faction[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [sweeps, setSweeps] = useState<Sweep[]>([]);
@@ -113,7 +134,7 @@ export default function App() {
             return (
               <button
                 key={t.id}
-                onClick={() => setTab(t.id)}
+                onClick={() => switchTab(t.id)}
                 aria-current={isActive ? 'page' : undefined}
                 className={`flex flex-shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors sm:px-4 ${
                   isActive
