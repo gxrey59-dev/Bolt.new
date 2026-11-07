@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Gem, Sparkles, Flame, Check, Loader2, Share2, Download, X, TrendingUp, Copy, ExternalLink } from 'lucide-react';
+import { Gem, Sparkles, Flame, Check, Loader2, Share2, Download, X, TrendingUp, Copy, ExternalLink, ShieldCheck, Lock } from 'lucide-react';
 import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { FACTIONS } from '@/lib/constants';
+import { signInWithEmail, signUpWithEmail } from '@/lib/operatorAuth';
 
 interface NFTCard {
   id: string;
@@ -36,6 +37,11 @@ export default function NFTCollection() {
   const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<NFTCard | null>(null);
   const [copied, setCopied] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
+  const [buyingId, setBuyingId] = useState<string | null>(null);
+  const [buyError, setBuyError] = useState('');
+  const [pendingBuy, setPendingBuy] = useState<string | null>(null);
+  const [purchaseComplete, setPurchaseComplete] = useState(false);
 
   const fetchNFTs = useCallback(async () => {
     setLoading(true);
@@ -56,6 +62,57 @@ export default function NFTCollection() {
   }, []);
 
   useEffect(() => { fetchNFTs(); }, [fetchNFTs]);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSignedIn(!!data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => setSignedIn(!!session));
+    if (new URLSearchParams(window.location.search).get('nft') === 'success') {
+      setPurchaseComplete(true);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  async function handleBuy(nft: NFTCard) {
+    setBuyError('');
+    const { data } = await supabase.auth.getSession();
+    if (!data.session) {
+      setPendingBuy(nft.id);
+      return;
+    }
+    setBuyingId(nft.id);
+    try {
+      const origin = `${window.location.origin}${window.location.pathname}`;
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-checkout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${data.session.access_token}`,
+        },
+        body: JSON.stringify({
+          nft_id: nft.id,
+          success_url: `${origin}?nft=success`,
+          cancel_url: `${origin}#nft`,
+        }),
+      });
+      const body: { url?: string; error?: string } = await response.json().catch(() => ({}));
+      if (!response.ok || !body.url) {
+        throw new Error(body.error === 'Sold out' ? 'This card just sold out.' : 'Checkout could not start. Please try again.');
+      }
+      window.location.href = body.url;
+    } catch (cause) {
+      setBuyError(cause instanceof Error ? cause.message : 'Checkout could not start. Please try again.');
+      setBuyingId(null);
+    }
+  }
+
+  function handleSignedIn() {
+    setSignedIn(true);
+    const id = pendingBuy;
+    setPendingBuy(null);
+    const nft = id ? nfts.find(n => n.id === id) : undefined;
+    if (nft) void handleBuy(nft);
+  }
 
   function handleShare() {
     const url = window.location.href;
@@ -89,6 +146,9 @@ export default function NFTCollection() {
 
   return (
     <section className="space-y-5">
+      {purchaseComplete && <p className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300"><ShieldCheck className="h-4 w-4" /> Payment received — your card is reserved. It may take a few seconds to appear as minted.</p>}
+      {buyError && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{buyError}</p>}
+      {pendingBuy && <BuyerAuthPanel onSignedIn={handleSignedIn} />}
       {loadError && <p role="alert" className="rounded-lg border border-red-500/30 p-3 text-sm text-red-300">{loadError}<button onClick={() => void fetchNFTs()} className="ml-3 underline">Retry</button></p>}
       {/* Hero Banner */}
       <div className="relative overflow-hidden rounded-2xl border border-amber-500/20 bg-gradient-to-br from-zinc-900 via-zinc-950 to-black p-6">
@@ -102,7 +162,7 @@ export default function NFTCollection() {
               <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">v1</span>
             </div>
             <p className="text-sm text-zinc-400 max-w-lg">
-              Faction artwork and collection designs. A deployed mint contract and wallet connection are required before minting can be enabled.
+              Faction artwork and collection designs. Buy instantly with a card through Stripe Checkout — payment is secured by Stripe and your card is reserved the moment it clears.
             </p>
             <div className="mt-3 flex items-center gap-4 text-[11px]">
               <span className="flex items-center gap-1 text-amber-400">
@@ -131,11 +191,11 @@ export default function NFTCollection() {
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-center">
           <p className="text-[10px] uppercase tracking-wider text-zinc-600">Total Minted</p>
-          <p className="font-mono text-lg font-bold tabular-nums text-zinc-100">— / {totalSupply} planned</p>
+          <p className="font-mono text-lg font-bold tabular-nums text-zinc-100">{nfts.reduce((s, n) => s + n.minted_count, 0)} / {totalSupply} minted</p>
         </div>
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-center">
           <p className="text-[10px] uppercase tracking-wider text-zinc-600">Mint Revenue</p>
-          <p className="font-mono text-lg font-bold tabular-nums text-emerald-400">—</p>
+          <p className="font-mono text-lg font-bold tabular-nums text-emerald-400">${nfts.reduce((s, n) => s + Number(n.mint_price) * n.minted_count, 0).toFixed(2)}</p>
         </div>
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-center">
           <p className="text-[10px] uppercase tracking-wider text-zinc-600">Unique Cards</p>
@@ -154,7 +214,8 @@ export default function NFTCollection() {
             const rarityStyle = RARITY_STYLES[nft.rarity] ?? RARITY_STYLES.rare;
             const factionMeta = FACTIONS.find(f => f.id === nft.faction_id);
             const accentColor = FACTION_COLORS[factionMeta?.color ?? 'blue'];
-            const mintProgress = 0;
+            const mintProgress = nft.total_supply > 0 ? (nft.minted_count / nft.total_supply) * 100 : 0;
+            const soldOut = nft.minted_count >= nft.total_supply;
 
             return (
               <div
@@ -208,8 +269,8 @@ export default function NFTCollection() {
                 {/* Mint progress */}
                 <div className="mb-3">
                   <div className="mb-1 flex items-center justify-between text-[9px] text-zinc-600">
-                    <span>On-chain supply unavailable</span>
-                    <span>—</span>
+                    <span>{nft.minted_count} / {nft.total_supply} minted</span>
+                    <span>{Math.round(mintProgress)}%</span>
                   </div>
                   <div className="h-1.5 w-full rounded-full bg-zinc-800">
                     <div
@@ -221,13 +282,17 @@ export default function NFTCollection() {
 
                 {/* Actions */}
                 <div className="flex items-center gap-2">
-                  <button disabled title="Deploy a mint contract and connect a wallet first" className="flex flex-1 cursor-not-allowed items-center justify-center gap-1.5 rounded-xl bg-zinc-800 py-3 text-sm font-bold text-zinc-500"><Flame className="h-4 w-4" /> Contract not connected</button>
                   <button
-                    onClick={() => handleShareCard(nft)}
-                    className="flex items-center justify-center rounded-xl bg-zinc-800 px-3 py-2.5 text-zinc-400 transition-all hover:bg-zinc-700 hover:text-zinc-200"
-                    title="Share this card"
+                    onClick={() => void handleBuy(nft)}
+                    disabled={soldOut || buyingId === nft.id}
+                    className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                      soldOut
+                        ? 'bg-zinc-800 text-zinc-500'
+                        : 'bg-amber-500 text-black hover:bg-amber-400'
+                    }`}
                   >
-                    <Share2 className="h-3.5 w-3.5" />
+                    {buyingId === nft.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flame className="h-4 w-4" />}
+                    {soldOut ? 'Sold Out' : buyingId === nft.id ? 'Opening checkout…' : `Buy — ${Number(nft.mint_price).toFixed(2)}`}
                   </button>
                 </div>
               </div>
@@ -305,20 +370,31 @@ export default function NFTCollection() {
               {/* Supply */}
               <div className="mb-4">
                 <div className="mb-1 flex items-center justify-between text-[10px] text-zinc-600">
-                  <span>On-chain supply unavailable</span>
-                  <span>—</span>
+                  <span>{selected.minted_count} / {selected.total_supply} minted</span>
+                  <span>{selected.total_supply > 0 ? Math.round((selected.minted_count / selected.total_supply) * 100) : 0}%</span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-zinc-800">
                   <div
                     className="h-2 rounded-full transition-all"
-                    style={{ width: '0%', backgroundColor: accentColor }}
+                    style={{ width: `${selected.total_supply > 0 ? (selected.minted_count / selected.total_supply) * 100 : 0}%`, backgroundColor: accentColor }}
                   />
                 </div>
               </div>
 
               {/* Actions */}
               <div className="flex items-center gap-2">
-                <button disabled title="Deploy a mint contract and connect a wallet first" className="flex flex-1 cursor-not-allowed items-center justify-center gap-1.5 rounded-xl bg-zinc-800 py-3 text-sm font-bold text-zinc-500"><Flame className="h-4 w-4" /> Contract not connected</button>
+                <button
+                  onClick={() => void handleBuy(selected)}
+                  disabled={selected.minted_count >= selected.total_supply || buyingId === selected.id}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                    selected.minted_count >= selected.total_supply
+                      ? 'bg-zinc-800 text-zinc-500'
+                      : 'bg-amber-500 text-black hover:bg-amber-400'
+                  }`}
+                >
+                  {buyingId === selected.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flame className="h-4 w-4" />}
+                  {selected.minted_count >= selected.total_supply ? 'Sold Out' : buyingId === selected.id ? 'Opening checkout…' : `Buy — ${Number(selected.mint_price).toFixed(2)}`}
+                </button>
                 <a
                   href={selected.image_url}
                   download={`wutang-nft-${selected.faction_id}.webp`}
@@ -353,5 +429,92 @@ export default function NFTCollection() {
         );
       })()}
     </section>
+  );
+}
+
+function BuyerAuthPanel({ onSignedIn }: { onSignedIn: () => void }) {
+  const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    if (!email.trim() || password.length < 6) {
+      setError('Enter your email and a password of at least 6 characters.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      if (mode === 'sign-in') {
+        await signInWithEmail(email.trim(), password);
+      } else {
+        await signUpWithEmail(email.trim(), password);
+      }
+      onSignedIn();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Sign-in failed. Please try again.');
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-md rounded-2xl border border-amber-500/30 bg-zinc-900/60 p-6">
+      <div className="mb-4 flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 text-amber-400">
+          <Lock className="h-5 w-5" />
+        </div>
+        <div>
+          <h3 className="text-sm font-semibold text-zinc-100">Create a free account to buy</h3>
+          <p className="text-xs text-zinc-500">Your purchase and card are tied to this account.</p>
+        </div>
+      </div>
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div className="grid grid-cols-2 gap-1 rounded-lg bg-zinc-950 p-1">
+          {(['sign-in', 'sign-up'] as const).map(option => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => { setMode(option); setError(''); }}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                mode === option ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {option === 'sign-in' ? 'Sign in' : 'Create account'}
+            </button>
+          ))}
+        </div>
+        <input
+          type="email"
+          autoComplete="email"
+          placeholder="Email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-amber-500/60"
+          required
+        />
+        <input
+          type="password"
+          autoComplete={mode === 'sign-in' ? 'current-password' : 'new-password'}
+          placeholder="Password (6+ characters)"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-amber-500/60"
+          minLength={6}
+          required
+        />
+        {error && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</p>}
+        <button
+          type="submit"
+          disabled={submitting}
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-bold text-black transition-colors hover:bg-amber-400 disabled:opacity-60"
+        >
+          {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+          {mode === 'sign-in' ? 'Sign in & continue' : 'Create account & continue'}
+        </button>
+      </form>
+    </div>
   );
 }
