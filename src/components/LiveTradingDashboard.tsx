@@ -296,6 +296,24 @@ export default function LiveTradingDashboard() {
         </div>
       )}
 
+      {/* Underfunded Banner — engine capital below exchange minimum order size */}
+      {isLive && !killActive && config !== null && config.liveCapital < 5.5 && (
+        <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 p-4 animate-slide-in">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="h-5 w-5 flex-shrink-0 text-amber-400" />
+            <div className="flex-1">
+              <p className="text-sm font-bold text-amber-400">TRADING PAUSED — WALLET BELOW EXCHANGE MINIMUM</p>
+              <p className="text-[11px] text-amber-400/80">
+                Usable capital {config.liveCapital.toFixed(2)} USDT is under Binance's $5.50 minimum order
+                size, so every signal is rejected before reaching the exchange. Deposit USDT to the trading wallet
+                and trading resumes automatically.
+              </p>
+            </div>
+            <DollarSign className="h-4 w-4 flex-shrink-0 text-amber-400/60" />
+          </div>
+        </div>
+      )}
+
       {/* Top Metric Cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {/* Equity */}
