@@ -22,3 +22,6 @@ verify_jwt = true
 
 [functions.stripe-webhook]
 verify_jwt = false
+
+[functions.stripe-subscription-checkout]
+verify_jwt = true

@@ -32,6 +32,10 @@
     "swarm-wallet": {
       "hasChanged": false,
       "hash": "31cd08da35b071be43b9d15d2b85c0289f986bebf6803465c764788a14077ef5"
+    },
+    "stripe-subscription-checkout": {
+      "hasChanged": false,
+      "hash": "c40646b806d78be7a433130c53124f0de6c22ba2793ff2fd41711f2fd2a750cf"
     }
   }
 }

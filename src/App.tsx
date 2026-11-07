@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback, useEffect } from 'react';
-import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3, ArrowUpFromLine, Activity, Wallet, ArrowLeft } from 'lucide-react';
+import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3, ArrowUpFromLine, Activity, Wallet, ArrowLeft, Rss } from 'lucide-react';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
 import Header from '@/components/Header';
@@ -34,6 +34,8 @@ const BillionRoadmap = lazy(() => import('@/components/BillionRoadmap'));
 const WithdrawalPanel = lazy(() => import('@/components/WithdrawalPanel'));
 const LiveExecutionDashboard = lazy(() => import('@/components/LiveExecutionDashboard'));
 
+const SignalsPro = lazy(() => import('@/components/SignalsPro'));
+
 const DATABASE_TABS = new Set<TabId>(['command', 'dashboard', 'table', 'operations']);
 const DASHBOARD_DATA_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/binance-feed/dashboard-data`;
 
@@ -47,6 +49,7 @@ const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'table', label: 'Table View', icon: Table },
   { id: 'operations', label: 'Operations', icon: Settings },
   { id: 'nft', label: 'NFT Armory', icon: Gem },
+  { id: 'signals-pro', label: 'Signals Pro', icon: Rss },
   { id: 'swarm', label: 'DeFi Swarms', icon: Network },
   { id: 'swarm-wallet', label: 'Swarm Wallet', icon: Wallet },
   { id: 'revenue', label: 'Revenue', icon: Crown },
@@ -253,6 +256,8 @@ export default function App() {
               <NFTCollection />
             </div>
           )}
+
+          {tab === 'signals-pro' && <SignalsPro />}
 
           {tab === 'swarm' && (
             <DeFiSwarmPanel />
