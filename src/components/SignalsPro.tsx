@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Zap, Check, Loader2, Crown, Lock, Unlock, TrendingUp, Radio } from 'lucide-react';
+import { useState, useEffect, useCallback, type FormEvent } from 'react';
+import { Zap, Check, Loader2, Crown, Lock, Unlock, TrendingUp, Radio, ShieldCheck } from 'lucide-react';
 import { supabase, hasDatabaseAccess } from '@/lib/supabase';
+import { signInWithEmail, signUpWithEmail } from '@/lib/operatorAuth';
 
 interface SubscriptionState {
   status: 'loading' | 'none' | 'active' | 'canceled';
@@ -22,6 +23,12 @@ export default function SignalsPro() {
   const [buying, setBuying] = useState(false);
   const [error, setError] = useState('');
   const [needsAuth, setNeedsAuth] = useState(false);
+  const [authMode, setAuthMode] = useState<'sign-in' | 'sign-up'>('sign-up');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [authNotice, setAuthNotice] = useState('');
 
   const loadSubscription = useCallback(async () => {
     if (!hasDatabaseAccess) {
@@ -113,6 +120,83 @@ export default function SignalsPro() {
     }
   }
 
+  async function handleAuth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthError('');
+    setAuthNotice('');
+    if (!authEmail.trim() || authPassword.length < 6) {
+      setAuthError('Enter your email and a password of at least 6 characters.');
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      if (authMode === 'sign-in') {
+        await signInWithEmail(authEmail.trim(), authPassword);
+      } else {
+        await signUpWithEmail(authEmail.trim(), authPassword);
+        setAuthNotice('Account created. You can now subscribe.');
+      }
+      setAuthPassword('');
+      await loadSubscription();
+    } catch (cause) {
+      setAuthError(cause instanceof Error ? cause.message : 'Sign-in failed. Please try again.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  const authForm = (
+    <form onSubmit={handleAuth} className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
+      <div className="grid grid-cols-2 gap-1 rounded-lg bg-zinc-950 p-1">
+        {(['sign-up', 'sign-in'] as const).map(option => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => { setAuthMode(option); setAuthError(''); setAuthNotice(''); }}
+            className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+              authMode === option ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            {option === 'sign-up' ? 'Create account' : 'Sign in'}
+          </button>
+        ))}
+      </div>
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-zinc-400">Email</span>
+        <input
+          type="email"
+          autoComplete="email"
+          value={authEmail}
+          onChange={e => setAuthEmail(e.target.value)}
+          className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20"
+          required
+        />
+      </label>
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-zinc-400">Password</span>
+        <input
+          type="password"
+          autoComplete={authMode === 'sign-up' ? 'new-password' : 'current-password'}
+          value={authPassword}
+          onChange={e => setAuthPassword(e.target.value)}
+          className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20"
+          minLength={6}
+          required
+        />
+      </label>
+      {authError && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">{authError}</p>}
+      {authNotice && <p className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300"><ShieldCheck className="h-3.5 w-3.5" />{authNotice}</p>}
+      <button
+        type="submit"
+        disabled={authBusy}
+        className="flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-cyan-500 disabled:opacity-60"
+      >
+        {authBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+        {authMode === 'sign-up' ? 'Create account' : 'Sign in'}
+      </button>
+    </form>
+  );
+
   const isActive = sub.status === 'active';
 
   return (
@@ -164,6 +248,7 @@ export default function SignalsPro() {
           <p className="flex items-center gap-2 text-sm text-amber-300">
             <Lock className="h-4 w-4" /> Create a free account to subscribe — access is tied to your login.
           </p>
+          {authForm}
         </div>
       )}
 
