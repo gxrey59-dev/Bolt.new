@@ -16,3 +16,9 @@ verify_jwt = false
 
 [functions.swarm-wallet]
 verify_jwt = false
+
+[functions.stripe-checkout]
+verify_jwt = true
+
+[functions.stripe-webhook]
+verify_jwt = false
