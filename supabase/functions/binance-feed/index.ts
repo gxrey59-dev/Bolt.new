@@ -1146,11 +1146,15 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
 
   // Update daily loss accumulator and compound live capital
   if (totalLoss > 0 || liveNetPnl !== 0) {
-    const newAccumulator = config.dailyLossAccumulator + totalLoss;
-    const resetAt = config.dailyLossResetAt ?? new Date().toISOString();
+    // Roll the accumulator window forward instead of letting a stale window
+    // persist: the reset timestamp is what checkKillSwitch compares against.
+    const now = new Date();
+    const resetAt = config.dailyLossResetAt ? new Date(config.dailyLossResetAt) : null;
+    const windowExpired = resetAt !== null && (now.getTime() - resetAt.getTime()) >= 24 * 60 * 60 * 1000;
+    const newAccumulator = windowExpired ? totalLoss : config.dailyLossAccumulator + totalLoss;
     const update: Record<string, number | string> = {
       daily_loss_accumulator: newAccumulator,
-      daily_loss_reset_at: resetAt,
+      daily_loss_reset_at: now.toISOString(),
     };
     if (liveNetPnl !== 0) {
       update.live_capital = config.liveCapital + liveNetPnl;
@@ -1547,7 +1551,10 @@ Deno.serve(async (req: Request) => {
 
       // Check if daily loss limit was hit after closing trades
       if (totalLoss > 0) {
-        const newAccumulator = config.dailyLossAccumulator + totalLoss;
+        const now = new Date();
+        const resetAt = config.dailyLossResetAt ? new Date(config.dailyLossResetAt) : null;
+        const windowExpired = resetAt !== null && (now.getTime() - resetAt.getTime()) >= 24 * 60 * 60 * 1000;
+        const newAccumulator = windowExpired ? totalLoss : config.dailyLossAccumulator + totalLoss;
         const capital = config.paperMode ? config.startingCapital : config.liveCapital;
         const maxLoss = capital * (config.maxDailyLossPct / 100);
         if (maxLoss > 0 && newAccumulator >= maxLoss) {
