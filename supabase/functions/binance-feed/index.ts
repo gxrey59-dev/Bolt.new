@@ -710,7 +710,10 @@ async function executeTrade(
   if (availableBalance < minNotional) return { tradeId: null, reasoning: `Insufficient available balance: ${availableBalance.toFixed(2)} (min ${minNotional})`, error: null };
 
   const sizedPosition = availableBalance * (config.maxPositionPct / 100);
-  const affordableCap = availableBalance * 0.8;
+  // A small account must be allowed to deploy near its full balance: with the
+  // flat 80% buffer, any balance under ~$6.90 clamps the order below the
+  // exchange minimum and the engine can never open a trade again.
+  const affordableCap = availableBalance * (availableBalance < 20 ? 0.98 : 0.8);
   // Buffer above the exchange minimum so rounding to the lot size cannot drop the order below it
   const liveFloor = minNotional * 1.1;
   const positionValue = isLive
