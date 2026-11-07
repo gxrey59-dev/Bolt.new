@@ -403,8 +403,47 @@ Deno.serve(async (req: Request) => {
     const url = new URL(req.url);
     const path = url.pathname.replace("/binance-withdraw", "");
 
-    const denied = path === "/harvest" ? await requireHarvestCaller(req) : await requireOperator(req);
+    const denied = path === "/harvest" || path === "/rules"
+      ? await requireHarvestCaller(req)
+      : await requireOperator(req);
     if (denied) return denied;
+
+    // ── Withdrawal capability diagnostics (read-only) ────────────
+    // Shows what the API key is actually allowed to do and which USDT
+    // networks accept withdrawals right now.
+    if (path === "/rules") {
+      const [account, coinList] = await Promise.all([
+        binanceSignedCall("/api/v3/account", {}),
+        binanceSignedCall("/sapi/v1/capital/config/getall", {}),
+      ]);
+      const perms = account.ok
+        ? {
+            canWithdraw: (account.data as Record<string, unknown>).canWithdraw ?? null,
+            canTrade: (account.data as Record<string, unknown>).canTrade ?? null,
+          }
+        : { error: account.raw.slice(0, 300), status: account.status };
+
+      let usdtNetworks: unknown = null;
+      if (coinList.ok && Array.isArray(coinList.data)) {
+        const usdt = (coinList.data as Array<Record<string, unknown>>).find((c) => c.coin === "USDT");
+        usdtNetworks = ((usdt?.networkList as Array<Record<string, unknown>>) ?? []).map((n) => ({
+          network: n.network,
+          withdrawEnable: n.withdrawEnable,
+          depositEnable: n.depositEnable,
+          withdrawFee: n.withdrawFee,
+          withdrawMin: n.withdrawMin,
+        }));
+      } else {
+        usdtNetworks = { error: coinList.raw.slice(0, 300), status: coinList.status };
+      }
+
+      return new Response(JSON.stringify({
+        apiKeyConfigured: !!BINANCE_API_KEY && !!BINANCE_SECRET_KEY,
+        permissions: perms,
+        usdtNetworks,
+        checkedAt: new Date().toISOString(),
+      }, null, 2), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
 
     // ─── Diagnostic ──────────────────────────────────────────────
     if (path === "/test") {
@@ -786,22 +825,37 @@ Deno.serve(async (req: Request) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+      // If the configured network is disabled, fall back to any USDT network
+      // that currently accepts withdrawals, cheapest fee first.
+      let chosenNetwork = cfg.network;
+      let chosenRules = rules;
       if (!rules.withdrawEnable) {
-        return new Response(JSON.stringify({ success: true, status: "skipped_network_disabled", harvestAmount, network: cfg.network }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        const allResult = await binanceSignedCall("/sapi/v1/capital/config/getall", {});
+        const candidates = ((allResult.ok && Array.isArray(allResult.data)
+          ? (allResult.data as Array<{ coin: string; networkList?: Array<{ network: string; withdrawEnable: boolean; withdrawFee: string; withdrawMin: string }> }>).find((c) => c.coin === "USDT")?.networkList
+          : undefined) ?? [])
+          .filter((n) => n.withdrawEnable)
+          .map((n) => ({ network: n.network, fee: parseFloat(n.withdrawFee) || 0, min: parseFloat(n.withdrawMin) || 0 }))
+          .sort((a, b) => a.fee - b.fee);
+        if (candidates.length === 0) {
+          return new Response(JSON.stringify({ success: true, status: "skipped_no_enabled_network", harvestAmount, network: cfg.network }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        chosenNetwork = candidates[0].network;
+        chosenRules = { withdrawMin: candidates[0].min, withdrawFee: candidates[0].fee, withdrawEnable: true };
       }
-      const minSendable = Math.max(rules.withdrawMin, rules.withdrawFee);
-      if (harvestAmount < minSendable || harvestAmount <= rules.withdrawFee) {
-        return new Response(JSON.stringify({ success: true, status: "below_withdraw_minimum", harvestAmount, withdrawMin: rules.withdrawMin, withdrawFee: rules.withdrawFee }), {
+      const minSendable = Math.max(chosenRules.withdrawMin, chosenRules.withdrawFee);
+      if (harvestAmount < minSendable || harvestAmount <= chosenRules.withdrawFee) {
+        return new Response(JSON.stringify({ success: true, status: "below_withdraw_minimum", harvestAmount, withdrawMin: chosenRules.withdrawMin, withdrawFee: chosenRules.withdrawFee, network: chosenNetwork }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
-      return submitUsdtWithdrawal(cfg.destination_address, cfg.network, harvestAmount, usdtBalance);
+      return submitUsdtWithdrawal(cfg.destination_address, chosenNetwork, harvestAmount, usdtBalance);
     }
 
-    return new Response(JSON.stringify({ error: "Unknown route. Use /balance, /transfer, /routes, or / (sweep)" }), {
+    return new Response(JSON.stringify({ error: "Unknown route. Use /balance, /transfer, /rules, /routes, or / (sweep)" }), {
       status: 404,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
