@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Activity, Download, RefreshCw, Wallet } from 'lucide-react';
+import { Activity, Download, RefreshCw, Wallet, Zap } from 'lucide-react';
 import ExecutionOrdersTable from '@/components/ExecutionOrdersTable';
 import PairAllowlistPanel from '@/components/PairAllowlistPanel';
 import { hasDatabaseAccess, supabase } from '@/lib/supabase';
@@ -7,6 +7,7 @@ import { operatorFetch } from '@/lib/operatorAuth';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import { buildExecutionOrders, type ExecutionOrder } from '@/lib/executionOrders';
 import { buildExecutionCsv, downloadCsv } from '@/lib/executionCsv';
+import { runStrategyScan } from '@/lib/engine';
 import type { SymbolHistory } from '@/lib/tradePnl';
 
 interface Balance { asset: string; free: number; locked: number }
@@ -57,6 +58,7 @@ export default function LiveExecutionDashboard() {
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -91,6 +93,16 @@ export default function LiveExecutionDashboard() {
     downloadCsv(`live-execution-${stamp}.csv`, csv);
   }
 
+  async function handleScanNow() {
+    setScanning(true);
+    try {
+      await runStrategyScan();
+      await refresh();
+    } finally {
+      setScanning(false);
+    }
+  }
+
   return (
     <section className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
@@ -100,6 +112,15 @@ export default function LiveExecutionDashboard() {
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
           {fetchedAt ? `Updated ${formatTime(new Date(fetchedAt).getTime())}` : 'Connecting to exchange'}
         </span>
+        <button
+          onClick={() => void handleScanNow()}
+          disabled={scanning}
+          title="One click: scans every pair and opens qualifying trades"
+          className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-amber-500 to-amber-400 px-4 py-2 text-xs font-bold text-black shadow-lg shadow-amber-500/20 transition-all hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Zap className={`h-3.5 w-3.5 ${scanning ? 'animate-pulse' : ''}`} />
+          {scanning ? 'Scanning…' : 'Scan & Trade Now'}
+        </button>
         <button
           onClick={exportCsv}
           disabled={loading || orders.length === 0}
