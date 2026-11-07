@@ -121,6 +121,18 @@ export default function NFTCollection() {
     }
   }
 
+  const cheapestAvailable = nfts
+    .filter(n => n.minted_count < n.total_supply)
+    .sort((a, b) => Number(a.mint_price) - Number(b.mint_price))[0];
+
+  async function handleQuickBuy() {
+    if (!cheapestAvailable) {
+      setBuyError('Every card is sold out — the next drop is coming soon.');
+      return;
+    }
+    await handleBuy(cheapestAvailable);
+  }
+
   function handleShare() {
     const url = window.location.href;
     navigator.clipboard.writeText(url).then(() => {
@@ -168,7 +180,7 @@ export default function NFTCollection() {
               <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">v1</span>
             </div>
             <p className="text-sm text-zinc-400 max-w-lg">
-              Faction artwork and collection designs. Buy instantly with a card through Stripe Checkout — payment is secured by Stripe and your card is reserved the moment it clears.
+              Faction artwork and collection designs. One tap and you own a card — payment is secured by Stripe and your card is reserved the moment it clears.
             </p>
             <div className="mt-3 flex items-center gap-4 text-[11px]">
               <span className="flex items-center gap-1 text-amber-400">
@@ -183,6 +195,22 @@ export default function NFTCollection() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => void handleQuickBuy()}
+              disabled={buyingId !== null}
+              className="group relative flex items-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-400 px-5 py-3 text-sm font-bold text-black shadow-lg shadow-amber-500/25 transition-all hover:shadow-amber-400/40 hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {buyingId !== null ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Zap className="h-4 w-4 transition-transform group-hover:scale-110" />
+              )}
+              {buyingId !== null
+                ? 'Opening checkout…'
+                : cheapestAvailable
+                  ? `Mint Now — ${Number(cheapestAvailable.mint_price).toFixed(2)}`
+                  : 'Sold Out'}
+            </button>
             <button
               onClick={handleShare}
               className="flex items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-800/80 px-4 py-2.5 text-xs font-bold text-zinc-200 transition-all hover:bg-zinc-700"
