@@ -26,7 +26,7 @@ const PHASES: Phase[] = [
     id: 1,
     name: 'Prove the Engine',
     target: '$10K/mo',
-    timeline: 'Week 1',
+    timeline: 'Tonight, hour 1',
     icon: Rocket,
     accent: 'text-emerald-400',
     bar: 'bg-emerald-400',
@@ -42,7 +42,7 @@ const PHASES: Phase[] = [
     id: 2,
     name: 'Productize',
     target: '$100K/mo',
-    timeline: 'Week 2',
+    timeline: 'Tonight, hours 2–3',
     icon: TrendingUp,
     accent: 'text-cyan-400',
     bar: 'bg-cyan-400',
@@ -58,7 +58,7 @@ const PHASES: Phase[] = [
     id: 3,
     name: 'Scale & Distribute',
     target: '$1M/mo',
-    timeline: 'Weeks 3–4',
+    timeline: 'Tonight, hours 4–6',
     icon: Building2,
     accent: 'text-amber-400',
     bar: 'bg-amber-400',
@@ -74,7 +74,7 @@ const PHASES: Phase[] = [
     id: 4,
     name: 'Institutional & DAO',
     target: '$10M/mo',
-    timeline: 'Weeks 5–6',
+    timeline: 'Overnight, hours 7–12',
     icon: Globe,
     accent: 'text-sky-400',
     bar: 'bg-sky-400',
@@ -101,11 +101,11 @@ export default function BillionRoadmap() {
           <div className="flex items-center gap-2 mb-3">
             <Crown className="h-6 w-6 text-amber-400" />
             <h2 className="text-xl font-bold text-zinc-100">The Path to $1,000,000,000</h2>
-            <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">ROADMAP · 6-WEEK SPRINT</span>
+            <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">ROADMAP · OVERNIGHT RUN</span>
           </div>
           <p className="text-sm text-zinc-400 max-w-2xl">
             Four phases from proving the engine to institutional scale, compressed into a
-            six-week sprint instead of 36 months. Each phase sets a monthly revenue target and
+            single overnight run instead of 36 months. Each phase sets a monthly revenue target and
             the milestones required to unlock the next.
           </p>
 
