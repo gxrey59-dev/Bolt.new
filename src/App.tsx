@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback, useEffect } from 'react';
-import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3, ArrowUpFromLine, Activity, Wallet } from 'lucide-react';
+import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3, ArrowUpFromLine, Activity, Wallet, ArrowLeft } from 'lucide-react';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
 import Header from '@/components/Header';
@@ -54,6 +54,8 @@ const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'roadmap', label: 'Roadmap', icon: Target },
 ];
 
+const NFT_STORE_TAB: TabId = 'nft';
+
 function tabFromHash(): TabId | null {
   const id = window.location.hash.replace(/^#/, '') as TabId;
   return TABS.some(t => t.id === id) ? id : null;
@@ -61,6 +63,7 @@ function tabFromHash(): TabId | null {
 
 export default function App() {
   const [tab, setTab] = useState<TabId>(() => tabFromHash() ?? 'swarm');
+  const inStoreMode = tab === NFT_STORE_TAB;
 
   useEffect(() => {
     const sync = () => {
@@ -124,8 +127,9 @@ export default function App() {
       <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-[520px] bg-grid" />
       <div aria-hidden className="pointer-events-none absolute -top-32 left-1/2 h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-cyan-500/10 blur-[120px]" />
       <div aria-hidden className="pointer-events-none absolute right-[8%] top-40 h-[280px] w-[280px] rounded-full bg-emerald-500/5 blur-[100px]" />
-      <Header factions={factions} sweeps={sweeps} operator={operatorStatus === 'operator'} />
+      {inStoreMode ? null : <Header factions={factions} sweeps={sweeps} operator={operatorStatus === 'operator'} />}
 
+      {inStoreMode ? null : (
       <nav className="sticky top-[73px] z-40 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1600px] gap-1 overflow-x-auto px-4 py-2 sm:px-6">
           {TABS.map(t => {
@@ -157,6 +161,7 @@ export default function App() {
           )}
         </div>
       </nav>
+      )}
 
       <main id="main-content" className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
         {dataError && DATABASE_TABS.has(tab) ? (
@@ -237,7 +242,16 @@ export default function App() {
           )}
 
           {tab === 'nft' && (
-            <NFTCollection />
+            <div className="flex flex-col items-center gap-4">
+              <button
+                onClick={() => switchTab('swarm')}
+                className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs font-semibold text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-200"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                Back to Command Center
+              </button>
+              <NFTCollection />
+            </div>
           )}
 
           {tab === 'swarm' && (
