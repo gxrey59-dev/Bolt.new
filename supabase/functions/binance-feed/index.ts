@@ -497,6 +497,31 @@ async function getLiveUsdtBalance(): Promise<number> {
   return usdt ? parseFloat(usdt.free) : 0;
 }
 
+async function getLiveAssetFreeBalance(asset: string): Promise<number> {
+  if (!BINANCE_API_KEY || !BINANCE_SECRET_KEY) return 0;
+  const params = new URLSearchParams({ recvWindow: "10000", timestamp: Date.now().toString() });
+  const sig = await hmacSha256(BINANCE_SECRET_KEY, params.toString());
+  const res = await fetch(`${BINANCE_BASE}/api/v3/account?${params.toString()}&signature=${sig}`, {
+    headers: { "X-MBX-APIKEY": BINANCE_API_KEY },
+  });
+  const data = await res.json();
+  if (data.code) return 0;
+  const row = (data.balances ?? []).find((b: { asset: string }) => b.asset === asset);
+  return row ? parseFloat(row.free) : 0;
+}
+
+async function cancelOpenOrders(symbol: string): Promise<string | null> {
+  if (!BINANCE_API_KEY || !BINANCE_SECRET_KEY) return "Binance API keys not configured";
+  const params = new URLSearchParams({ symbol, recvWindow: "10000", timestamp: Date.now().toString() });
+  const sig = await hmacSha256(BINANCE_SECRET_KEY, params.toString());
+  const res = await fetch(`${BINANCE_BASE}/api/v3/openOrders?${params.toString()}&signature=${sig}`, {
+    method: "DELETE",
+    headers: { "X-MBX-APIKEY": BINANCE_API_KEY },
+  });
+  if (!res.ok) return (await res.text()).slice(0, 200);
+  return null;
+}
+
 async function placeBinanceOrder(symbol: string, side: "BUY" | "SELL", quantity: number, isMarket: boolean): Promise<{ orderId: string | null; error: string | null }> {
   if (!BINANCE_API_KEY || !BINANCE_SECRET_KEY) return { orderId: null, error: "Binance API keys not configured" };
 
@@ -1071,14 +1096,41 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
           const closeResult = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", quantity, true);
           closeOrderId = closeResult.orderId;
           if (closeResult.error || !closeOrderId) {
-            const executionError = closeResult.error ?? "Exchange returned no close order ID";
-            await supabase.from("paper_trades").update({ execution_error: executionError }).eq("id", trade.id);
-            await supabase.from("audit_log").insert({
-              event_type: "live_close_failed", entity_type: "paper_trades", entity_id: trade.id,
-              message: `LIVE CLOSE FAILED: ${trade.symbol} — ${executionError}`,
-              metadata: { symbol: trade.symbol, quantity, error: executionError },
-            });
-            continue;
+            let executionError = closeResult.error ?? "Exchange returned no close order ID";
+            // Self-heal: an "insufficient balance" close is usually caused by tokens
+            // locked in stale open orders (e.g. a previous close placed a limit order
+            // that never filled). Cancel all open orders on the symbol to unlock the
+            // tokens, re-read the true free balance, and retry once.
+            if (/insufficient balance/i.test(executionError)) {
+              const cancelErr = await cancelOpenOrders(trade.symbol);
+              const base = (trade.symbol.match(/^(.*?)(USDT|BUSD|USDC)$/) ?? [])[1] ?? trade.symbol;
+              const free = await getLiveAssetFreeBalance(base);
+              // Binance returns -2011 "Unknown order sent" when there are no open
+              // orders to cancel — that is a success for our purposes.
+              const cancelOk = !cancelErr || /-2011|Unknown order/i.test(cancelErr);
+              if (!cancelOk) {
+                executionError = `Close failed: ${executionError}; cancel open orders also failed: ${cancelErr}`;
+              } else if (free < quantity * 0.99) {
+                executionError = `Close failed: ${executionError}; after canceling open orders, exchange holds only ${free} ${base} (need ${quantity})`;
+              } else {
+                const retry = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", quantity, true);
+                closeOrderId = retry.orderId;
+                if (retry.error || !retry.orderId) {
+                  executionError = `Close failed: ${executionError}; retry after cancel also failed: ${retry.error ?? "no order ID"}`;
+                } else {
+                  executionError = "";
+                }
+              }
+            }
+            if (executionError) {
+              await supabase.from("paper_trades").update({ execution_error: executionError }).eq("id", trade.id);
+              await supabase.from("audit_log").insert({
+                event_type: "live_close_failed", entity_type: "paper_trades", entity_id: trade.id,
+                message: `LIVE CLOSE FAILED: ${trade.symbol} — ${executionError}`,
+                metadata: { symbol: trade.symbol, quantity, error: executionError },
+              });
+              continue;
+            }
           }
         }
 
