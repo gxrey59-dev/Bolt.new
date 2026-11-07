@@ -11,11 +11,11 @@
     },
     "binance-feed": {
       "hasChanged": false,
-      "hash": "57de99ca0bc8d126f1de1fe56de7391b527cf7ac5b1e110caefd434698e6b578"
+      "hash": "7b09143140a602711fea3f113349afa73629c142e1135894c939158979aff4b4"
     },
     "binance-withdraw": {
       "hasChanged": false,
-      "hash": "af72bd94367cc6a0f72a555ef15362dfd6d390e383a8ef6b2bbbbd231b0325b7"
+      "hash": "50225fc757beebe371fc3164167e24050cabf1487467c732de278af80688bdc4"
     },
     "get-config": {
       "hasChanged": false,
@@ -23,7 +23,7 @@
     },
     "swarm-wallet": {
       "hasChanged": false,
-      "hash": "f4c97d17d2f9fe2d61c541a10ca5bf2a12907d3bc10643e0c99b28b4a80c6453"
+      "hash": "31cd08da35b071be43b9d15d2b85c0289f986bebf6803465c764788a14077ef5"
     }
   }
 }

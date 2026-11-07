@@ -253,11 +253,18 @@ async function readSpends() {
   return { spends: data ?? [], spent24h: Math.round(spent24h * 100) / 100 };
 }
 
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 async function isWorkerCaller(req: Request) {
   const provided = req.headers.get("x-cron-secret") ?? "";
   const { data, error } = await supabase.from("internal_secrets").select("value").eq("name", "swarm_worker").maybeSingle();
   if (error) throw new Error(`Worker secret check failed: ${error.message}`);
-  return Boolean(data && provided && provided === data.value);
+  return Boolean(data && provided.length > 0 && timingSafeEqual(provided, data.value));
 }
 
 Deno.serve(async (req: Request) => {
