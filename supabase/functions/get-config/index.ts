@@ -12,7 +12,7 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify({
-    url: Deno.env.get("SUPABASE_URL"),
+    ok: true,
   }), {
     headers: { "Content-Type": "application/json", ...corsHeaders },
   });

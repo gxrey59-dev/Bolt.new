@@ -12,6 +12,27 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
 
+async function requireOperator(req: Request): Promise<Response | null> {
+  const token = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";
+  if (!token) return new Response(JSON.stringify({ error: "Operator sign-in required" }), {
+    status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+  const { data: userData, error: userError } = await supabase.auth.getUser(token);
+  if (userError || !userData.user) return new Response(JSON.stringify({ error: "Operator sign-in required" }), {
+    status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+  const { data: operator, error: opError } = await supabase
+    .from("app_operators")
+    .select("user_id")
+    .eq("user_id", userData.user.id)
+    .maybeSingle();
+  if (opError) throw new Error(`Operator check failed: ${opError.message}`);
+  if (!operator) return new Response(JSON.stringify({ error: "This account is not authorized for backtests" }), {
+    status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+  return null;
+}
+
 const BINANCE_BASE = "https://api.binance.us";
 const DEFAULT_FEE_PCT = 0.1;
 const DEFAULT_HISTORY_SYMBOLS = [
@@ -663,6 +684,9 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
 
   try {
+    const denied = await requireOperator(req);
+    if (denied) return denied;
+
     const url = new URL(req.url);
     const path = url.pathname.replace("/backtest-engine", "");
 

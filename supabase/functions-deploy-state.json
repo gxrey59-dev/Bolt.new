@@ -3,7 +3,7 @@
   "functions": {
     "backtest-engine": {
       "hasChanged": false,
-      "hash": "64b52c925c91a0d56e02a441d1a529b8a1fbb359cb1c3b3a8bd98d6345a5c0b4"
+      "hash": "7fc2c8795fc1bbe17cfd90e5ff33dc15bb6be80ab646851bb4c40b642b74effc"
     },
     "binance-account": {
       "hasChanged": false,
@@ -19,7 +19,7 @@
     },
     "get-config": {
       "hasChanged": false,
-      "hash": "47b5e77867e5bab6dee78fc8a446e0d6a40c9d71a7fe6c7ea80a87ee930248b0"
+      "hash": "ec5b2e66dde50a85ab87d2339de8130e305e52f1fd060acaa4df36a1611094fd"
     },
     "swarm-wallet": {
       "hasChanged": false,

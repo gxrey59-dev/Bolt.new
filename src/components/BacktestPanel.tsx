@@ -1,9 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { FlaskConical, Play, TrendingUp, TrendingDown, Activity, Target, Zap, Award, BarChart3 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+import { operatorFetch } from '@/lib/operatorAuth';
 
 interface BacktestRun {
   id: string;
@@ -109,13 +107,9 @@ export default function BacktestPanel() {
     setRunning(true);
     setError(null);
     try {
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/backtest-engine/run`, {
+      const res = await operatorFetch('backtest-engine/run', {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${ANON_KEY}`,
-          apikey: ANON_KEY,
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           years,
           iterations,
