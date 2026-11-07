@@ -26,7 +26,7 @@ const PHASES: Phase[] = [
     id: 1,
     name: 'Prove the Engine',
     target: '$10K/mo',
-    timeline: '0–3 months',
+    timeline: 'Week 1',
     icon: Rocket,
     accent: 'text-emerald-400',
     bar: 'bg-emerald-400',
@@ -35,14 +35,14 @@ const PHASES: Phase[] = [
       { label: 'Scale trading capital from $22 to $100K', done: false },
       { label: 'Improve win rate from 33% to 55%+', done: false },
       { label: 'Get first NFT mints (deploy on-chain)', done: false },
-      { label: 'Connect real DeFi wallets', done: false },
+      { label: 'Connect real DeFi wallets', done: true },
     ],
   },
   {
     id: 2,
     name: 'Productize',
     target: '$100K/mo',
-    timeline: '3–9 months',
+    timeline: 'Week 2',
     icon: TrendingUp,
     accent: 'text-cyan-400',
     bar: 'bg-cyan-400',
@@ -58,7 +58,7 @@ const PHASES: Phase[] = [
     id: 3,
     name: 'Scale & Distribute',
     target: '$1M/mo',
-    timeline: '9–18 months',
+    timeline: 'Weeks 3–4',
     icon: Building2,
     accent: 'text-amber-400',
     bar: 'bg-amber-400',
@@ -74,7 +74,7 @@ const PHASES: Phase[] = [
     id: 4,
     name: 'Institutional & DAO',
     target: '$10M/mo',
-    timeline: '18–36 months',
+    timeline: 'Weeks 5–6',
     icon: Globe,
     accent: 'text-sky-400',
     bar: 'bg-sky-400',
@@ -101,11 +101,12 @@ export default function BillionRoadmap() {
           <div className="flex items-center gap-2 mb-3">
             <Crown className="h-6 w-6 text-amber-400" />
             <h2 className="text-xl font-bold text-zinc-100">The Path to $1,000,000,000</h2>
-            <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">ROADMAP</span>
+            <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">ROADMAP · 6-WEEK SPRINT</span>
           </div>
           <p className="text-sm text-zinc-400 max-w-2xl">
-            Four phases from proving the engine to institutional scale. Each phase sets a monthly
-            revenue target and the milestones required to unlock the next.
+            Four phases from proving the engine to institutional scale, compressed into a
+            six-week sprint instead of 36 months. Each phase sets a monthly revenue target and
+            the milestones required to unlock the next.
           </p>
 
           {/* Cumulative revenue axis */}
