@@ -13,6 +13,7 @@ const FactionGrid = lazy(() => import('@/components/FactionGrid'));
 const SignalFeed = lazy(() => import('@/components/SignalFeed'));
 const AuditFeed = lazy(() => import('@/components/AuditFeed'));
 const WithdrawalErrorLog = lazy(() => import('@/components/WithdrawalErrorLog'));
+const IntruderScannerPanel = lazy(() => import('@/components/IntruderScannerPanel'));
 const BinanceKeyStatusBadge = lazy(() => import('@/components/BinanceKeyStatusBadge'));
 const WithdrawalStatusBanner = lazy(() => import('@/components/WithdrawalStatusBanner'));
 const DashboardView = lazy(() => import('@/components/DashboardView'));
@@ -234,6 +235,7 @@ export default function App() {
               <OperatorStatusCard email={operatorEmail} />
               <BinanceFeedPanel />
               <BinanceKeyStatusBadge />
+              <IntruderScannerPanel />
               <WithdrawalErrorLog />
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <CircuitBreakerPanel breakers={breakers} factions={factions} />

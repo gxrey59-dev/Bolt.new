@@ -1243,16 +1243,39 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
 
 // ─── Main Handler ──────────────────────────────────────────────────
 
-const OPERATOR_ROUTES = new Set(["/kill-switch", "/close-all", "/sell-dust", "/account"]);
+const OPERATOR_ROUTES = new Set(["/kill-switch", "/close-all", "/sell-dust", "/account", "/intrusions"]);
 
-async function requireOperator(req: Request): Promise<Response | null> {
+function clientIp(req: Request): string | null {
+  const fwd = req.headers.get("x-forwarded-for");
+  if (!fwd) return null;
+  return fwd.split(",")[0].trim() || null;
+}
+
+function logIntruder(req: Request, route: string, reason: string, detail?: string): void {
+  const ip = clientIp(req);
+  void supabase.from("intruder_events").insert({
+    function_name: "binance-feed",
+    route,
+    method: req.method,
+    client_ip: ip,
+    reason,
+    detail: detail ?? null,
+  }).then(
+    () => {},
+    (err) => console.error("intruder_events insert failed:", err?.message ?? err),
+  );
+}
+
+async function requireOperator(req: Request, route: string): Promise<Response | null> {
   const token = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";
   const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
   if (!token) {
+    logIntruder(req, route, "no_token", "Missing Authorization header");
     return new Response(JSON.stringify({ error: "Operator sign-in required" }), { status: 401, headers: jsonHeaders });
   }
   const { data: userData, error: userError } = await supabase.auth.getUser(token);
   if (userError || !userData.user) {
+    logIntruder(req, route, "invalid_token", "Token rejected by auth");
     return new Response(JSON.stringify({ error: "Operator sign-in required" }), { status: 401, headers: jsonHeaders });
   }
   const { data: operator, error: opError } = await supabase
@@ -1262,6 +1285,7 @@ async function requireOperator(req: Request): Promise<Response | null> {
     .maybeSingle();
   if (opError) throw new Error(`Operator check failed: ${opError.message}`);
   if (!operator) {
+    logIntruder(req, route, "not_operator", `Signed-in user ${userData.user.id} is not an operator`);
     return new Response(JSON.stringify({ error: "This account is not authorized for trading controls" }), { status: 403, headers: jsonHeaders });
   }
   return null;
@@ -1274,9 +1298,9 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-async function requireScanCaller(req: Request): Promise<Response | null> {
+async function requireScanCaller(req: Request, route: string): Promise<Response | null> {
   const provided = req.headers.get("x-cron-secret") ?? "";
-  if (!provided) return requireOperator(req);
+  if (!provided) return requireOperator(req, route);
   const { data, error } = await supabase
     .from("internal_secrets")
     .select("value")
@@ -1284,6 +1308,7 @@ async function requireScanCaller(req: Request): Promise<Response | null> {
     .maybeSingle();
   if (error) throw new Error(`Scan secret check failed: ${error.message}`);
   if (!data || provided.length === 0 || !timingSafeEqual(provided, data.value)) {
+    logIntruder(req, route, "bad_cron_secret", "x-cron-secret failed timing-safe comparison");
     return new Response(JSON.stringify({ error: "Unauthorized scan request" }), {
       status: 401,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -1300,13 +1325,42 @@ Deno.serve(async (req: Request) => {
     const path = url.pathname.replace("/binance-feed", "");
 
     if (OPERATOR_ROUTES.has(path)) {
-      const denied = await requireOperator(req);
+      const denied = await requireOperator(req, path);
       if (denied) return denied;
     }
 
     if (path === "/scan") {
-      const denied = await requireScanCaller(req);
+      const denied = await requireScanCaller(req, path);
       if (denied) return denied;
+    }
+
+    // ─── GET /intrusions — operator-only intrusion log ────────────
+    if (path === "/intrusions") {
+      const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
+      const { data, error } = await supabase
+        .from("intruder_events")
+        .select("id, occurred_at, function_name, route, method, client_ip, reason, detail")
+        .gte("occurred_at", since)
+        .order("occurred_at", { ascending: false })
+        .limit(100);
+      if (error) throw new Error(`Intrusion log unavailable: ${error.message}`);
+      const events = data ?? [];
+      const byReason = events.reduce<Record<string, number>>((acc, e) => {
+        acc[e.reason] = (acc[e.reason] ?? 0) + 1;
+        return acc;
+      }, {});
+      const uniqueIps = new Set(events.map((e) => e.client_ip).filter(Boolean)).size;
+      return new Response(JSON.stringify({
+        events,
+        totals: {
+          last7Days: events.length,
+          uniqueIps,
+          byReason,
+        },
+        refreshedAt: new Date().toISOString(),
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
     }
 
     // ─── GET /prices ──────────────────────────────────────────────

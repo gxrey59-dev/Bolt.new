@@ -24,18 +24,48 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: jsonHeaders });
 }
 
-async function requireOperator(req: Request): Promise<Response | null> {
+function clientIp(req: Request): string | null {
+  const fwd = req.headers.get("x-forwarded-for");
+  if (!fwd) return null;
+  return fwd.split(",")[0].trim() || null;
+}
+
+function logIntruder(req: Request, route: string, reason: string, detail?: string): void {
+  const ip = clientIp(req);
+  void supabase.from("intruder_events").insert({
+    function_name: "binance-account",
+    route,
+    method: req.method,
+    client_ip: ip,
+    reason,
+    detail: detail ?? null,
+  }).then(
+    () => {},
+    (err) => console.error("intruder_events insert failed:", err?.message ?? err),
+  );
+}
+
+async function requireOperator(req: Request, route: string): Promise<Response | null> {
   const token = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";
-  if (!token) return jsonResponse({ error: "Operator sign-in required" }, 401);
+  if (!token) {
+    logIntruder(req, route, "no_token", "Missing Authorization header");
+    return jsonResponse({ error: "Operator sign-in required" }, 401);
+  }
   const { data: userData, error: userError } = await supabase.auth.getUser(token);
-  if (userError || !userData.user) return jsonResponse({ error: "Operator sign-in required" }, 401);
+  if (userError || !userData.user) {
+    logIntruder(req, route, "invalid_token", "Token rejected by auth");
+    return jsonResponse({ error: "Operator sign-in required" }, 401);
+  }
   const { data: operator, error: opError } = await supabase
     .from("app_operators")
     .select("user_id")
     .eq("user_id", userData.user.id)
     .maybeSingle();
   if (opError) throw new Error(`Operator check failed: ${opError.message}`);
-  if (!operator) return jsonResponse({ error: "This account is not authorized to view the exchange account" }, 403);
+  if (!operator) {
+    logIntruder(req, route, "not_operator", `Signed-in user ${userData.user.id} is not an operator`);
+    return jsonResponse({ error: "This account is not authorized to view the exchange account" }, 403);
+  }
   return null;
 }
 
@@ -102,11 +132,10 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
 
   try {
-    const denied = await requireOperator(req);
-    if (denied) return denied;
-
     const url = new URL(req.url);
     const route = url.pathname.replace(/\/+$/, "").split("/").pop();
+    const denied = await requireOperator(req, route ?? "unknown");
+    if (denied) return denied;
 
     if (route === "account") return await getAccount();
     if (route === "orders") return await getOrders(url);

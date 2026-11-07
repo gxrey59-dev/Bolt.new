@@ -15,14 +15,37 @@ const BINANCE_BASE = "https://api.binance.us";
 const BINANCE_API_KEY = Deno.env.get("BINANCE_API_KEY_3")?.trim() ?? "";
 const BINANCE_SECRET_KEY = Deno.env.get("BINANCE_SECRET_KEY_3")?.trim() ?? "";
 
-async function requireOperator(req: Request): Promise<Response | null> {
+function clientIp(req: Request): string | null {
+  const fwd = req.headers.get("x-forwarded-for");
+  if (!fwd) return null;
+  return fwd.split(",")[0].trim() || null;
+}
+
+function logIntruder(req: Request, route: string, reason: string, detail?: string): void {
+  const ip = clientIp(req);
+  void supabase.from("intruder_events").insert({
+    function_name: "binance-withdraw",
+    route,
+    method: req.method,
+    client_ip: ip,
+    reason,
+    detail: detail ?? null,
+  }).then(
+    () => {},
+    (err) => console.error("intruder_events insert failed:", err?.message ?? err),
+  );
+}
+
+async function requireOperator(req: Request, route: string): Promise<Response | null> {
   const token = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";
   const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
   if (!token) {
+    logIntruder(req, route, "no_token", "Missing Authorization header");
     return new Response(JSON.stringify({ error: "Operator sign-in required" }), { status: 401, headers: jsonHeaders });
   }
   const { data: userData, error: userError } = await supabase.auth.getUser(token);
   if (userError || !userData.user) {
+    logIntruder(req, route, "invalid_token", "Token rejected by auth");
     return new Response(JSON.stringify({ error: "Operator sign-in required" }), { status: 401, headers: jsonHeaders });
   }
   const { data: operator, error: opError } = await supabase
@@ -32,6 +55,7 @@ async function requireOperator(req: Request): Promise<Response | null> {
     .maybeSingle();
   if (opError) throw new Error(`Operator check failed: ${opError.message}`);
   if (!operator) {
+    logIntruder(req, route, "not_operator", `Signed-in user ${userData.user.id} is not an operator`);
     return new Response(JSON.stringify({ error: "This account is not authorized for withdrawals" }), { status: 403, headers: jsonHeaders });
   }
   return null;
@@ -44,7 +68,7 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-async function requireHarvestCaller(req: Request): Promise<Response | null> {
+async function requireHarvestCaller(req: Request, route: string): Promise<Response | null> {
   const provided = req.headers.get("x-cron-secret") ?? "";
   const { data, error } = await supabase
     .from("internal_secrets")
@@ -53,6 +77,7 @@ async function requireHarvestCaller(req: Request): Promise<Response | null> {
     .maybeSingle();
   if (error) throw new Error(`Harvest secret check failed: ${error.message}`);
   if (!data || provided.length === 0 || !timingSafeEqual(provided, data.value)) {
+    logIntruder(req, "harvest", "bad_cron_secret", "x-cron-secret failed timing-safe comparison");
     return new Response(JSON.stringify({ error: "Unauthorized harvest request" }), {
       status: 401,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -404,8 +429,8 @@ Deno.serve(async (req: Request) => {
     const path = url.pathname.replace("/binance-withdraw", "");
 
     const denied = path === "/harvest" || path === "/rules"
-      ? await requireHarvestCaller(req)
-      : await requireOperator(req);
+      ? await requireHarvestCaller(req, path)
+      : await requireOperator(req, path);
     if (denied) return denied;
 
     // ── Withdrawal capability diagnostics (read-only) ────────────

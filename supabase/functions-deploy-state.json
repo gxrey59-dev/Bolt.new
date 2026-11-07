@@ -3,19 +3,19 @@
   "functions": {
     "backtest-engine": {
       "hasChanged": false,
-      "hash": "8dbea43489892a03dc1586d8f240a3f303547f829eefb264820cf7e6b509b9fb"
+      "hash": "3fe2256b941a33b1a640ba43f6b7b58a888a656e2a435eed30bca40627f2e7ee"
     },
     "binance-account": {
       "hasChanged": false,
-      "hash": "684f83244615952827aa3a22f405c764e33570d347d595e2152dfd3ace0821f1"
+      "hash": "4d7a276a48f708a3992a40ca5376e58ee09ec2c8dfef8a93cd48c118eb6cbeaf"
     },
     "binance-feed": {
       "hasChanged": false,
-      "hash": "6ae58703dad4b8eeafa70631b75708d2e03f1047b8be24d8ab26b7839ad6ee3c"
+      "hash": "286c85add5a2d17d51b629750e7057362eacf80eeccee3ea6b9a5d4eac8e1923"
     },
     "binance-withdraw": {
       "hasChanged": false,
-      "hash": "4a1afda30ca8dd04292b34aad5fa25a9e1e23114d7d6a3ccb9b50f65fb2e5933"
+      "hash": "5e19588073e67c9d910e024329e2d73cf0145515529f101dc372f8da619d6681"
     },
     "get-config": {
       "hasChanged": false,
@@ -25,6 +25,10 @@
       "hasChanged": false,
       "hash": "c376b886fadf058fa86a974e3247801d3de61048202d203c686d9b19d754fd1e"
     },
+    "stripe-subscription-checkout": {
+      "hasChanged": false,
+      "hash": "c40646b806d78be7a433130c53124f0de6c22ba2793ff2fd41711f2fd2a750cf"
+    },
     "stripe-webhook": {
       "hasChanged": false,
       "hash": "42c78a8fc955141f1b5cd5e857b59ec9e3f3831d1f2d6de0b428b1fc07824b98"
@@ -32,10 +36,6 @@
     "swarm-wallet": {
       "hasChanged": false,
       "hash": "31cd08da35b071be43b9d15d2b85c0289f986bebf6803465c764788a14077ef5"
-    },
-    "stripe-subscription-checkout": {
-      "hasChanged": false,
-      "hash": "c40646b806d78be7a433130c53124f0de6c22ba2793ff2fd41711f2fd2a750cf"
     }
   }
 }
