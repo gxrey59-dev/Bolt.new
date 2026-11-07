@@ -16,6 +16,7 @@ const WithdrawalErrorLog = lazy(() => import('@/components/WithdrawalErrorLog'))
 const BinanceKeyStatusBadge = lazy(() => import('@/components/BinanceKeyStatusBadge'));
 const WithdrawalStatusBanner = lazy(() => import('@/components/WithdrawalStatusBanner'));
 const DashboardView = lazy(() => import('@/components/DashboardView'));
+const SecurityStatusBar = lazy(() => import('@/components/SecurityStatusBar'));
 const FactionPerformanceDashboard = lazy(() => import('@/components/FactionPerformanceDashboard'));
 const SentimentOverride = lazy(() => import('@/components/SentimentOverride'));
 const TableView = lazy(() => import('@/components/TableView'));
@@ -131,9 +132,10 @@ export default function App() {
       <div aria-hidden className="pointer-events-none absolute -top-32 left-1/2 h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-cyan-500/10 blur-[120px]" />
       <div aria-hidden className="pointer-events-none absolute right-[8%] top-40 h-[280px] w-[280px] rounded-full bg-emerald-500/5 blur-[100px]" />
       {inStoreMode ? null : <Header factions={factions} sweeps={sweeps} operator={operatorStatus === 'operator'} />}
+      {inStoreMode ? null : <Suspense fallback={null}><SecurityStatusBar /></Suspense>}
 
       {inStoreMode ? null : (
-      <nav className="sticky top-[73px] z-40 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-xl">
+      <nav className="sticky top-[110px] z-40 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1600px] gap-1 overflow-x-auto px-4 py-2 sm:px-6">
           {TABS.map(t => {
             const Icon = t.icon;
