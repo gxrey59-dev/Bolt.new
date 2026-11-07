@@ -5,6 +5,7 @@ import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEnt
 import Header from '@/components/Header';
 import OperatorGate from '@/components/OperatorGate';
 import OperatorStatusCard from '@/components/OperatorStatusCard';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import { useOperatorSession } from '@/lib/useOperatorSession';
 import { signOutOperator } from '@/lib/operatorAuth';
 
@@ -97,11 +98,14 @@ export default function App() {
   useVisibilityPolling(refreshDashboard, 10_000, DATABASE_TABS.has(tab));
 
   return (
-    <div className="min-h-screen bg-zinc-950">
+    <div className="relative min-h-screen overflow-x-clip bg-zinc-950">
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-[520px] bg-grid" />
+      <div aria-hidden className="pointer-events-none absolute -top-32 left-1/2 h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-cyan-500/10 blur-[120px]" />
+      <div aria-hidden className="pointer-events-none absolute right-[8%] top-40 h-[280px] w-[280px] rounded-full bg-emerald-500/5 blur-[100px]" />
       <Header factions={factions} sweeps={sweeps} operator={operatorStatus === 'operator'} />
 
       <nav className="sticky top-[73px] z-40 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-[1600px] gap-1 px-6 py-2">
+        <div className="mx-auto flex max-w-[1600px] gap-1 overflow-x-auto px-4 py-2 sm:px-6">
           {TABS.map(t => {
             const Icon = t.icon;
             const isActive = tab === t.id;
@@ -109,13 +113,14 @@ export default function App() {
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
+                aria-current={isActive ? 'page' : undefined}
+                className={`flex flex-shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all sm:px-4 ${
                   isActive
-                    ? 'bg-zinc-800 text-zinc-100'
+                    ? 'bg-zinc-800 text-zinc-100 shadow-inner shadow-black/40 ring-1 ring-zinc-700'
                     : 'text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300'
                 }`}
               >
-                <Icon className="h-4 w-4" />
+                <Icon className={`h-4 w-4 ${isActive ? 'text-cyan-400' : ''}`} />
                 {t.label}
               </button>
             );
@@ -123,7 +128,7 @@ export default function App() {
           {(operatorStatus === 'operator' || operatorStatus === 'signed-in') && (
             <button
               onClick={() => { void signOutOperator(); }}
-              className="ml-auto rounded-lg px-4 py-2 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-900 hover:text-zinc-300"
+              className="ml-auto flex-shrink-0 rounded-lg px-4 py-2 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-900 hover:text-zinc-300"
             >
               Sign out
             </button>
@@ -131,14 +136,15 @@ export default function App() {
         </div>
       </nav>
 
-      <main className="mx-auto max-w-[1600px] px-6 py-6">
+      <main className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
         {dataError && DATABASE_TABS.has(tab) ? (
           <div role="alert" className="mb-5 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
             {dataError}
           </div>
         ) : null}
         <Suspense fallback={<div className="py-24 text-center text-sm text-zinc-500">Loading workspace…</div>}>
-        <div className="space-y-8 animate-fade-in">
+        <ErrorBoundary key={tab}>
+        <div className="space-y-8 animate-rise-in">
           {tab === 'sprint' && (
             <RevenueSprintDashboard />
           )}
@@ -239,6 +245,7 @@ export default function App() {
             <BillionRoadmap />
           )}
         </div>
+        </ErrorBoundary>
         </Suspense>
       </main>
 
