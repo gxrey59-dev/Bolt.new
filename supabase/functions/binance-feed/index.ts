@@ -55,11 +55,10 @@ function roundToStep(value: number, step: number): number {
 // SOLUSDT -$3.10, XRPUSDT -$1.74, ETHUSDT -$1.26, AVAXUSDT -$0.25)
 // Kept profitable + neutral symbols only
 const TRADING_PAIRS = [
-  "BTCUSDT", "DOGEUSDT", "LINKUSDT",
-  "ADAUSDT", "IMXUSDT", "SEIUSDT",
-  "MANAUSDT", "TIAUSDT", "FILUSDT",
-  "ATOMUSDT", "SANDUSDT", "AXSUSDT",
-  "BCHUSDT", "LTCUSDT",
+  // Monitored universe. AXSUSDT has no open entries left (allowlist) but must stay
+  // listed so the existing live position keeps its stop-loss managed until exit.
+  "SOLUSDT", "SEIUSDT", "IMXUSDT",
+  "TIAUSDT", "FILUSDT", "DOGEUSDT", "AXSUSDT",
 ];
 
 const FACTION_IDS = [
@@ -1482,6 +1481,25 @@ Deno.serve(async (req: Request) => {
               signals.push({
                 symbol, faction: factionId, strategy: signal.strategy, side: signal.side,
                 reasoning: signal.reasoning + " [skipped: already open]", price: currentPrice, strength: signal.strength,
+                tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
+              });
+              continue;
+            }
+            // Pair cooldown: never re-enter a pair we just exited — the recent
+            // history shows immediate re-entries churn fees on the same move.
+            const { data: lastClosed } = await supabase
+              .from("paper_trades")
+              .select("closed_at")
+              .eq("symbol", symbol)
+              .eq("status", "closed")
+              .eq("is_live", true)
+              .order("closed_at", { ascending: false })
+              .limit(1);
+            const lastClosedAt = lastClosed?.[0]?.closed_at ? new Date(lastClosed[0].closed_at as string).getTime() : 0;
+            if (Date.now() - lastClosedAt < 4 * 60 * 60 * 1000) {
+              signals.push({
+                symbol, faction: factionId, strategy: signal.strategy, side: signal.side,
+                reasoning: signal.reasoning + " [skipped: pair cooldown 4h after last exit]", price: currentPrice, strength: signal.strength,
                 tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
               });
               continue;
