@@ -1272,7 +1272,7 @@ Deno.serve(async (req: Request) => {
         supabase.from("sweeps").select("*").order("created_at", { ascending: false }).limit(20),
         supabase.from("circuit_breakers").select("*").order("created_at", { ascending: false }).limit(20),
         supabase.from("sentiment").select("*").eq("active", true).order("created_at", { ascending: false }).limit(1),
-        supabase.from("audit_log").select("*").order("created_at", { ascending: false }).limit(50),
+        supabase.from("audit_log").select("id, event_type, entity_type, entity_id, message, created_at").order("created_at", { ascending: false }).limit(50),
       ]);
       const failed = [factions, signals, sweeps, breakers, sentiment, audit].find((result) => result.error);
       if (failed?.error) throw new Error(`Dashboard data unavailable: ${failed.error.message}`);
