@@ -1,8 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Gem, Sparkles, Flame, Check, Loader2, Share2, Download, X, TrendingUp, Copy, ExternalLink, ShieldCheck, Lock } from 'lucide-react';
+import { Gem, Sparkles, Flame, Check, Loader2, Share2, Download, X, TrendingUp, Copy, ExternalLink, ShieldCheck, Lock, Zap } from 'lucide-react';
 import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { FACTIONS } from '@/lib/constants';
 import { signInWithEmail, signUpWithEmail } from '@/lib/operatorAuth';
+
+interface RecentSale {
+  card_name: string;
+  member: string;
+  faction_id: string;
+  rarity: string;
+  image_url: string;
+  buyer_masked: string;
+  purchased_at: string;
+}
 
 interface NFTCard {
   id: string;
@@ -42,6 +52,17 @@ export default function NFTCollection() {
   const [buyError, setBuyError] = useState('');
   const [pendingBuy, setPendingBuy] = useState<string | null>(null);
   const [purchaseComplete, setPurchaseComplete] = useState(false);
+  const [recentSales, setRecentSales] = useState<RecentSale[]>([]);
+
+  const fetchRecentSales = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.rpc('get_recent_nft_sales');
+      if (error) return;
+      setRecentSales((data ?? []) as RecentSale[]);
+    } catch {
+      /* feed is non-critical */
+    }
+  }, []);
 
   const fetchNFTs = useCallback(async () => {
     setLoading(true);
@@ -61,7 +82,12 @@ export default function NFTCollection() {
     } finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { fetchNFTs(); }, [fetchNFTs]);
+  useEffect(() => {
+    fetchNFTs();
+    fetchRecentSales();
+    const timer = setInterval(() => void fetchRecentSales(), 30000);
+    return () => clearInterval(timer);
+  }, [fetchNFTs, fetchRecentSales]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSignedIn(!!data.session));
@@ -203,6 +229,45 @@ export default function NFTCollection() {
         </div>
       </div>
 
+      {/* Scarcity banner */}
+      {(() => {
+        const minted = nfts.reduce((s, n) => s + n.minted_count, 0);
+        const remaining = totalSupply - minted;
+        if (totalSupply === 0) return null;
+        const pct = Math.round((minted / totalSupply) * 100);
+        if (pct < 25) return null;
+        return (
+          <div className="flex items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+            <Zap className="h-5 w-5 flex-shrink-0 text-amber-400" />
+            <p className="text-sm text-amber-300">
+              {pct >= 80
+                ? `Almost gone — only ${remaining} of ${totalSupply} cards left.`
+                : `${minted} of ${totalSupply} cards already claimed. ${remaining} remaining.`}
+            </p>
+          </div>
+        );
+      })()}
+
+      {/* Recent purchases */}
+      {recentSales.length > 0 && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+          <p className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+            <Check className="h-3.5 w-3.5 text-emerald-400" /> Recent purchases
+          </p>
+          <ul className="space-y-2">
+            {recentSales.slice(0, 5).map((sale, i) => (
+              <li key={`${sale.purchased_at}-${i}`} className="flex items-center gap-2.5 text-sm">
+                <img src={sale.image_url} alt="" className="h-8 w-8 rounded-lg object-contain" />
+                <span className="font-medium text-zinc-200">{sale.card_name}</span>
+                <span className="text-zinc-600">·</span>
+                <span className="text-zinc-500">{sale.buyer_masked}</span>
+                <span className="ml-auto text-xs text-zinc-600">{formatTimeAgo(sale.purchased_at)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* NFT Grid */}
       {loading ? (
         <div className="flex h-64 items-center justify-center">
@@ -293,6 +358,14 @@ export default function NFTCollection() {
                   >
                     {buyingId === nft.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flame className="h-4 w-4" />}
                     {soldOut ? 'Sold Out' : buyingId === nft.id ? 'Opening checkout…' : `Buy — ${Number(nft.mint_price).toFixed(2)}`}
+                  </button>
+                  <button
+                    onClick={() => handleShareCard(nft)}
+                    className="flex items-center justify-center rounded-xl bg-zinc-800 px-3 py-2.5 text-zinc-400 transition-all hover:bg-zinc-700 hover:text-zinc-200"
+                    title="Share this card"
+                    aria-label="Share this card"
+                  >
+                    <Share2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
               </div>
@@ -430,6 +503,16 @@ export default function NFTCollection() {
       })()}
     </section>
   );
+}
+
+function formatTimeAgo(iso: string): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 function BuyerAuthPanel({ onSignedIn }: { onSignedIn: () => void }) {
