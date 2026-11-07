@@ -28,7 +28,7 @@ export default function AuditFeed({ entries }: Props) {
       <div className="h-64 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/40 p-1">
         {recent.length === 0 ? (
           <p className="flex h-full items-center justify-center text-xs text-zinc-600">
-            No events yet...
+            No events yet
           </p>
         ) : (
           <div className="space-y-0.5">

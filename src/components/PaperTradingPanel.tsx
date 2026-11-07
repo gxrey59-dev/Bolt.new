@@ -185,7 +185,7 @@ export default function PaperTradingPanel() {
                     disabled={togglingMode}
                     className="rounded-lg bg-red-600 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-red-500 disabled:opacity-50"
                   >
-                    {togglingMode ? 'Switching...' : 'Go Live ($5)'}
+                    {togglingMode ? 'Switching…' : 'Go Live ($5)'}
                   </button>
                   <button
                     onClick={() => setConfirmLive(false)}
@@ -221,7 +221,7 @@ export default function PaperTradingPanel() {
                 disabled={togglingKill}
                 className="rounded-lg bg-red-600 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-red-500 disabled:opacity-50"
               >
-                {togglingKill ? 'Tripping...' : 'Confirm Trip'}
+                {togglingKill ? 'Tripping…' : 'Confirm Trip'}
               </button>
               <button
                 onClick={() => setConfirmKill(false)}
@@ -338,7 +338,7 @@ export default function PaperTradingPanel() {
                     disabled={closing}
                     className="flex items-center gap-1 rounded-lg bg-red-600 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-red-500 disabled:opacity-50"
                   >
-                    {closing ? 'Closing...' : 'Confirm Close All'}
+                    {closing ? 'Closing…' : 'Confirm Close All'}
                   </button>
                   <button
                     onClick={() => setConfirmClose(false)}

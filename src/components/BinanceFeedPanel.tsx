@@ -76,7 +76,7 @@ export default function BinanceFeedPanel() {
             className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
           >
             <Brain className="h-3.5 w-3.5" />
-            {scanning ? 'Scanning...' : 'Run Strategy Scan'}
+            {scanning ? 'Scanning…' : 'Run Strategy Scan'}
           </button>
         </div>
 

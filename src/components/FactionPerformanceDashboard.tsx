@@ -137,7 +137,7 @@ export default function FactionPerformanceDashboard({ factions }: Props) {
       ) : null}
 
       {loading ? (
-        <div className="py-16 text-center text-sm text-zinc-500">Loading trade history...</div>
+        <div className="py-16 text-center text-sm text-zinc-500">Loading trade history…</div>
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

@@ -10,7 +10,7 @@ interface Props {
 
 type Mode = 'sign-in' | 'sign-up';
 
-const inputClass = 'w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-emerald-500/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/20';
+const inputClass = 'w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-emerald-500/60 focus:ring-2 focus:ring-emerald-500/20';
 
 export default function OperatorGate({ status, children }: Props) {
   if (status === 'operator') return <>{children}</>;

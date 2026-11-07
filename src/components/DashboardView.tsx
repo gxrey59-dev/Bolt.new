@@ -119,7 +119,7 @@ export default function DashboardView({ factions }: Props) {
               </>
             ) : (
               <p className="text-sm text-zinc-400">
-                {trades === null ? 'Loading live results...' : 'No faction has a profitable closed live trade yet.'}
+                {trades === null ? 'Loading live results…' : 'No faction has a profitable closed live trade yet.'}
               </p>
             )}
           </div>

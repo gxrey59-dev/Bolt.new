@@ -99,6 +99,7 @@ export default function App() {
 
   return (
     <div className="relative min-h-screen overflow-x-clip bg-zinc-950">
+      <a href="#main-content" className="skip-link">Skip to main content</a>
       <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-[520px] bg-grid" />
       <div aria-hidden className="pointer-events-none absolute -top-32 left-1/2 h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-cyan-500/10 blur-[120px]" />
       <div aria-hidden className="pointer-events-none absolute right-[8%] top-40 h-[280px] w-[280px] rounded-full bg-emerald-500/5 blur-[100px]" />
@@ -114,7 +115,7 @@ export default function App() {
                 key={t.id}
                 onClick={() => setTab(t.id)}
                 aria-current={isActive ? 'page' : undefined}
-                className={`flex flex-shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all sm:px-4 ${
+                className={`flex flex-shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors sm:px-4 ${
                   isActive
                     ? 'bg-zinc-800 text-zinc-100 shadow-inner shadow-black/40 ring-1 ring-zinc-700'
                     : 'text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300'
@@ -136,7 +137,7 @@ export default function App() {
         </div>
       </nav>
 
-      <main className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
+      <main id="main-content" className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
         {dataError && DATABASE_TABS.has(tab) ? (
           <div role="alert" className="mb-5 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
             {dataError}

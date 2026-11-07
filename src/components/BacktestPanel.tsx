@@ -207,7 +207,7 @@ export default function BacktestPanel() {
               min={1}
               max={100}
               disabled={running}
-              className="w-20 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-200 focus:border-cyan-500 focus:outline-none disabled:opacity-50"
+              className="w-20 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-200 focus:border-cyan-500 disabled:opacity-50"
             />
           </div>
           <div>
@@ -219,7 +219,7 @@ export default function BacktestPanel() {
               min={1}
               max={50}
               disabled={running}
-              className="w-20 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-200 focus:border-cyan-500 focus:outline-none disabled:opacity-50"
+              className="w-20 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-200 focus:border-cyan-500 disabled:opacity-50"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -240,7 +240,7 @@ export default function BacktestPanel() {
             className="flex items-center gap-1.5 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-cyan-500 disabled:opacity-50"
           >
             <Play className="h-4 w-4" />
-            {running ? 'Running...' : 'Run Backtest'}
+            {running ? 'Running…' : 'Run Backtest'}
           </button>
         </div>
 
@@ -256,7 +256,7 @@ export default function BacktestPanel() {
         <div className="flex items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/60 py-20">
           <div className="flex flex-col items-center gap-3">
             <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-cyan-400" />
-            <p className="text-sm text-zinc-500">Simulating {years} years across {iterations} paths...</p>
+            <p className="text-sm text-zinc-500">Simulating {years} years across {iterations} paths…</p>
           </div>
         </div>
       )}

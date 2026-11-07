@@ -341,8 +341,9 @@ export default function NFTCollection() {
                 <Copy className="h-3 w-3 flex-shrink-0 text-zinc-600" />
                 <input
                   readOnly
+                  aria-label="NFT collection share link"
                   value={`${window.location.origin}/#nft`}
-                  className="flex-1 bg-transparent text-[11px] text-zinc-500 outline-none"
+                  className="flex-1 bg-transparent text-[11px] text-zinc-500"
                   onClick={e => (e.target as HTMLInputElement).select()}
                 />
                 <ExternalLink className="h-3 w-3 flex-shrink-0 text-zinc-600" />

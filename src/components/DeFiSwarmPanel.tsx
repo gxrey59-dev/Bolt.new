@@ -465,7 +465,7 @@ export default function DeFiSwarmPanel() {
             onKeyDown={event => { if (event.key === 'Enter') run(); }}
             spellCheck={false}
             placeholder="Public wallet address (0x…)"
-            className="min-w-64 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-200 outline-none focus:border-cyan-600"
+            className="min-w-64 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-200 focus:border-cyan-600"
           />
           <button onClick={() => void connectWallet()} className="rounded-lg bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700">
             <Wallet className="mr-2 inline h-4 w-4" />Connect wallet

@@ -86,8 +86,8 @@ export default function ExecutionOrdersTable({ orders, loading }: Props) {
               type="search"
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="Search coin, faction, status"
-              className="w-full rounded-lg border border-zinc-800 bg-zinc-950 py-2 pl-9 pr-3 text-sm text-zinc-200 placeholder:text-zinc-600 focus:border-emerald-500/60 focus:outline-none"
+              placeholder="Search coin, faction, status…"
+              className="w-full rounded-lg border border-zinc-800 bg-zinc-950 py-2 pl-9 pr-3 text-sm text-zinc-200 placeholder:text-zinc-600 focus:border-emerald-500/60"
             />
           </div>
         </div>
@@ -110,7 +110,7 @@ export default function ExecutionOrdersTable({ orders, loading }: Props) {
               id="execution-sort"
               value={sortKey}
               onChange={e => setSortKey(e.target.value as SortKey)}
-              className="rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-200 focus:outline-none"
+              className="rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-200"
             >
               {SORT_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
             </select>
@@ -126,7 +126,7 @@ export default function ExecutionOrdersTable({ orders, loading }: Props) {
 
       {rows.length === 0 ? (
         <p className="px-5 py-10 text-center text-sm text-zinc-500">
-          {loading ? 'Loading orders...' : orders.length === 0 ? 'No orders found on the exchange for these coins.' : 'No orders match your search or filter.'}
+          {loading ? 'Loading orders…' : orders.length === 0 ? 'No orders found on the exchange for these coins.' : 'No orders match your search or filter.'}
         </p>
       ) : (
         <div className="overflow-x-auto">

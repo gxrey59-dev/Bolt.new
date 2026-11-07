@@ -247,7 +247,7 @@ export default function LiveTradingDashboard() {
             className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-[11px] font-bold text-white transition-all hover:bg-blue-500 disabled:opacity-50"
           >
             <Zap className={`h-3.5 w-3.5 ${scanning ? 'animate-pulse' : ''}`} />
-            {scanning ? 'Scanning...' : 'Scan Now'}
+            {scanning ? 'Scanning…' : 'Scan Now'}
           </button>
           {positions.length > 0 && (
             confirmClose ? (
@@ -257,7 +257,7 @@ export default function LiveTradingDashboard() {
                   disabled={closing}
                   className="flex items-center gap-1 rounded-lg bg-red-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-red-500 disabled:opacity-50"
                 >
-                  {closing ? 'Closing...' : 'Confirm Close All'}
+                  {closing ? 'Closing…' : 'Confirm Close All'}
                 </button>
                 <button onClick={() => setConfirmClose(false)} className="rounded-lg bg-zinc-700 px-3 py-1.5 text-[11px] font-semibold text-zinc-300 hover:bg-zinc-600">
                   Cancel
@@ -435,7 +435,7 @@ export default function LiveTradingDashboard() {
                 </span>
               </div>
             )) : (
-              <p className="text-center text-xs text-zinc-600 py-4">Loading market data...</p>
+              <p className="text-center text-xs text-zinc-600 py-4">Loading market data…</p>
             )}
           </div>
         </div>
@@ -684,7 +684,7 @@ export default function LiveTradingDashboard() {
                 disabled={togglingKill}
                 className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-500 disabled:opacity-50"
               >
-                {togglingKill ? 'Tripping...' : 'Confirm Halt'}
+                {togglingKill ? 'Tripping…' : 'Confirm Halt'}
               </button>
               <button onClick={() => setConfirmKill(false)} className="rounded-lg bg-zinc-700 px-4 py-2 text-xs font-semibold text-zinc-300 hover:bg-zinc-600">
                 Cancel
