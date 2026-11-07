@@ -1111,7 +1111,31 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
               if (!cancelOk) {
                 executionError = `Close failed: ${executionError}; cancel open orders also failed: ${cancelErr}`;
               } else if (free < quantity * 0.99) {
-                executionError = `Close failed: ${executionError}; after canceling open orders, exchange holds only ${free} ${base} (need ${quantity})`;
+                // The tokens backing this position no longer exist on the exchange
+                // (sold outside the engine, withdrawn, or never delivered). The
+                // database record is stale bookkeeping. Reconcile: close the record
+                // with zero P&L and remove its book value from the tracked pool —
+                // never re-credit money the exchange does not hold.
+                const bookValue = Number(trade.position_value) * (remainingQty / Number(trade.quantity));
+                await supabase.from("paper_trades").update({
+                  status: "closed",
+                  exit_price: currentPrice,
+                  pnl: 0,
+                  closed_at: new Date().toISOString(),
+                  execution_error: `Reconciled: exchange holds 0 ${base}; record closed with 0 P&L, ${bookValue.toFixed(2)} book value removed from tracked capital`,
+                }).eq("id", trade.id);
+                await supabase.from("factions").update({
+                  open_positions: 0,
+                  paper_balance: 0,
+                  updated_at: new Date().toISOString(),
+                }).eq("id", trade.faction_id);
+                await supabase.from("audit_log").insert({
+                  event_type: "live_position_reconciled", entity_type: "paper_trades", entity_id: trade.id,
+                  message: `LIVE POSITION RECONCILED: ${trade.symbol} — exchange holds 0 ${base} (need ${quantity}). Record closed with 0 P&L; ${bookValue.toFixed(2)} book value removed from tracked capital.`,
+                  metadata: { symbol: trade.symbol, faction_id: trade.faction_id, quantity, book_value: bookValue },
+                });
+                closedCount++;
+                continue;
               } else {
                 const retry = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", quantity, true);
                 closeOrderId = retry.orderId;
