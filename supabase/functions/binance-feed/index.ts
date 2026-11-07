@@ -660,8 +660,9 @@ async function checkKillSwitch(config: FullConfig): Promise<{ tripped: boolean; 
   const capital = config.paperMode ? config.startingCapital : config.liveCapital;
   const maxLoss = capital * (config.maxDailyLossPct / 100);
 
-  // Guard: don't trip on $0 capital — that means no funds deployed, not a loss breach
-  if (maxLoss > 0 && dailyAccumulator >= maxLoss) {
+  // Guard: don't trip on dust capital. Below the exchange minimum no new trades
+  // can open, so any accumulated "loss" is bookkeeping noise, not a trading breach.
+  if (capital >= 5.5 && maxLoss > 0 && dailyAccumulator >= maxLoss) {
     await tripKillSwitch(`Daily loss limit reached: ${dailyAccumulator.toFixed(2)} >= ${maxLoss.toFixed(2)} (${config.maxDailyLossPct}% of ${capital})`);
     return { tripped: true, reason: `Daily loss limit: ${dailyAccumulator.toFixed(2)}` };
   }
