@@ -261,7 +261,7 @@ async function fetchHourlyHistory(symbol: string, pages: number): Promise<Candle
         low: parseFloat(d[3] as string), close: parseFloat(d[4] as string),
         volume: parseFloat(d[5] as string), openTime: d[0] as number,
       }));
-      out.unshift(...page.map(({ openTime: _t, ...c }) => c));
+      out.unshift(...page.map((c) => ({ open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume })));
       endTime = (data[0][0] as number) - 1;
     }
   } catch { /* partial history is still usable */ }
@@ -498,7 +498,17 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 // ─── Routes ────────────────────────────────────────────────────────
 
-async function handleSimulation(body: Record<string, any>): Promise<Response> {
+interface SimulationBody {
+  years?: number;
+  iterations?: number;
+  startingCapital?: number;
+  optimize?: boolean;
+  feePct?: number;
+  symbols?: string[];
+  params?: Partial<BacktestParams>;
+}
+
+async function handleSimulation(body: SimulationBody): Promise<Response> {
   const years: number = body.years ?? 50;
   const iterations: number = Math.min(body.iterations ?? 3, 5);
   const startingCapital: number = body.startingCapital ?? 10000;
@@ -611,7 +621,7 @@ async function handleSimulation(body: Record<string, any>): Promise<Response> {
   });
 }
 
-async function handleHoldout(body: Record<string, any>): Promise<Response> {
+async function handleHoldout(body: SimulationBody & { trainFraction?: number }): Promise<Response> {
   const symbols: string[] = body.symbols ?? DEFAULT_HISTORY_SYMBOLS;
   const startingCapital: number = body.startingCapital ?? 10000;
   const feePct: number = body.feePct ?? DEFAULT_FEE_PCT;
