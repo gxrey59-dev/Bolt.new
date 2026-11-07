@@ -27,6 +27,7 @@ const NFTCollection = lazy(() => import('@/components/NFTCollection'));
 const DeFiSwarmPanel = lazy(() => import('@/components/DeFiSwarmPanel'));
 const SwarmWalletSetup = lazy(() => import('@/components/SwarmWalletSetup'));
 const RevenueCommandCenter = lazy(() => import('@/components/RevenueCommandCenter'));
+const ProfitHistory = lazy(() => import('@/components/ProfitHistory'));
 const RevenueSprintDashboard = lazy(() => import('@/components/RevenueSprintDashboard'));
 const BillionRoadmap = lazy(() => import('@/components/BillionRoadmap'));
 const WithdrawalPanel = lazy(() => import('@/components/WithdrawalPanel'));
@@ -222,7 +223,10 @@ export default function App() {
           )}
 
           {tab === 'revenue' && (
-            <RevenueCommandCenter />
+            <>
+              <ProfitHistory />
+              <RevenueCommandCenter />
+            </>
           )}
 
           {tab === 'withdrawal' && (
