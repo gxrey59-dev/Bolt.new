@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { callWallet, type SwarmStatus } from '@/lib/swarmWallet';
 import {
   Activity,
   Bot,
@@ -299,6 +300,8 @@ async function readEngineWithFailover(config: EngineConfig, wallet: string, sign
 
 export default function DeFiSwarmPanel() {
   const [wallet, setWallet] = useState(initialWallet);
+  const [swarmWalletAddress, setSwarmWalletAddress] = useState<string | null>(null);
+  const [swarmStatusError, setSwarmStatusError] = useState('');
   const [running, setRunning] = useState(true);
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -351,6 +354,34 @@ export default function DeFiSwarmPanel() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    const SWARM_STATUS_POLL_MS = 60_000;
+
+    const pullStatus = async () => {
+      try {
+        const status = await callWallet('status') as SwarmStatus;
+        if (disposed) return;
+        setSwarmWalletAddress(status.wallet?.address ?? null);
+        setSwarmStatusError('');
+      } catch (cause) {
+        if (!disposed) {
+          setSwarmStatusError(cause instanceof Error ? cause.message : 'Swarm wallet status unavailable.');
+        }
+      }
+    };
+
+    void pullStatus();
+    const statusTimer = setInterval(() => void pullStatus(), SWARM_STATUS_POLL_MS);
+    return () => {
+      disposed = true;
+      clearInterval(statusTimer);
+    };
+  }, []);
+
+  const effectiveWallet = swarmWalletAddress ?? wallet;
+  const usingSwarmWallet = swarmWalletAddress !== null && swarmWalletAddress.toLowerCase() !== wallet.toLowerCase();
+
+  useEffect(() => {
     if (!running) return;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -360,7 +391,7 @@ export default function DeFiSwarmPanel() {
       controller = new AbortController();
       setLoading(true);
       try {
-        const next = await readWithFailover(validateWallet(wallet), controller.signal, providerRef.current);
+        const next = await readWithFailover(validateWallet(effectiveWallet), controller.signal, providerRef.current);
         if (!disposed) {
           setSnapshot(next);
           setError('');
@@ -383,7 +414,7 @@ export default function DeFiSwarmPanel() {
       if (timer) clearTimeout(timer);
       controller?.abort();
     };
-  }, [running, wallet, refresh]);
+  }, [running, effectiveWallet, refresh]);
 
   useEffect(() => {
     if (!running) return;
@@ -396,7 +427,7 @@ export default function DeFiSwarmPanel() {
       setEngineLoading(true);
       const configs = protocolCards.slice(1);
       const results = await Promise.allSettled(
-        configs.map(config => readEngineWithFailover(config, validateWallet(wallet), controller!.signal)),
+        configs.map(config => readEngineWithFailover(config, validateWallet(effectiveWallet), controller!.signal)),
       );
       if (!disposed) {
         const successes: Record<string, EngineSnapshot> = {};
@@ -421,7 +452,7 @@ export default function DeFiSwarmPanel() {
       if (timer) clearTimeout(timer);
       controller?.abort();
     };
-  }, [running, wallet, refresh]);
+  }, [running, effectiveWallet, refresh]);
 
   const fresh = snapshot !== null && Date.now() - snapshot.blockTime <= 180_000;
   const healthy = running && fresh && !error;
@@ -433,7 +464,7 @@ export default function DeFiSwarmPanel() {
   const allHealthy = liveCount === protocolCards.length;
   const checking = loading || engineLoading;
   const status = allHealthy ? 'ALL SWARMS LIVE' : checking ? `CONNECTING ${liveCount}/${protocolCards.length}` : running ? `${liveCount}/${protocolCards.length} SWARMS LIVE` : 'PAUSED';
-  const explorer = `https://polygonscan.com/address/${addressPattern.test(wallet.trim()) ? wallet.trim() : DEFAULT_WALLET}`;
+  const explorer = `https://polygonscan.com/address/${addressPattern.test(effectiveWallet.trim()) ? effectiveWallet.trim() : DEFAULT_WALLET}`;
   const stats = [
     { label: 'POL balance', value: snapshot?.nativeBalance ?? '—', icon: Wallet },
     { label: 'Collateral', value: snapshot ? `${snapshot.collateral} ${snapshot.currency}` : '—', icon: Boxes },
@@ -475,7 +506,9 @@ export default function DeFiSwarmPanel() {
           </button>
           {running && <button onClick={stop} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"><Square className="mr-2 inline h-4 w-4" />Pause</button>}
         </div>
-        <p className="text-xs text-zinc-500">Connected read-only to <span className="font-mono text-cyan-400">{wallet}</span>. Every 30 seconds the swarm verifies fresh blocks, canonical protocol contracts, and wallet balances across Polygon, Arbitrum, Ethereum, Optimism, and Base. Aave also verifies collateral, debt, and health factor. No private key is requested.</p>
+        <p className="text-xs text-zinc-500">Connected read-only to <span className="font-mono text-cyan-400">{effectiveWallet}</span>{usingSwarmWallet ? <span className="ml-2 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">REAL SWARM WALLET</span> : <span className="ml-2 rounded-full bg-zinc-700/40 px-2 py-0.5 text-[10px] font-bold text-zinc-400">MANUAL ADDRESS</span>}. Every 30 seconds the swarm verifies fresh blocks, canonical protocol contracts, and wallet balances across Polygon, Arbitrum, Ethereum, Optimism, and Base. Aave also verifies collateral, debt, and health factor. No private key is requested.</p>
+        {usingSwarmWallet && <p role="status" className="text-xs text-emerald-400">Watching the dedicated swarm wallet created in the swarm wallet setup — balances below are the real swarm funds.</p>}
+        {swarmStatusError && <p role="status" className="text-xs text-amber-300">Swarm wallet status: {swarmStatusError} Showing the manual address.</p>}
         {snapshot && <p role="status" className="text-xs text-cyan-400">{liveCount}/{protocolCards.length} engines verified · Aave checked at {new Date(snapshot.checkedAt).toLocaleTimeString()} via {snapshot.source} · pool {snapshot.pool.slice(0, 8)}…{snapshot.pool.slice(-6)}</p>}
         {error && <div role="alert" className="flex items-start justify-between gap-3 rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-sm text-red-300"><span>{error}{snapshot ? ' Showing the last verified snapshot.' : ''}</span><button onClick={run} className="flex-shrink-0 text-xs font-bold text-red-200 underline">Retry</button></div>}
         {Object.keys(engineErrors).length > 0 && <div role="alert" className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-300">{Object.entries(engineErrors).map(([protocol, message]) => <p key={protocol}><span className="font-bold">{protocol}:</span> {message}</p>)}</div>}
