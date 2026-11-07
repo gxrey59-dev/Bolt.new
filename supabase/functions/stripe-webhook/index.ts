@@ -99,6 +99,7 @@ async function handleEvent(event: Stripe.Event) {
           amount_total,
           currency,
           metadata,
+          customer_details,
         } = stripeData as Stripe.Checkout.Session;
 
         // Insert the order into the stripe_orders table
@@ -127,7 +128,7 @@ async function handleEvent(event: Stripe.Event) {
               stripe_payment_intent_id: typeof payment_intent === 'string' ? payment_intent : null,
               amount_total,
               currency,
-              buyer_email: metadata.buyer_email ?? '',
+              buyer_email: metadata.buyer_email || customer_details?.email || '',
               updated_at: new Date().toISOString(),
             })
             .eq('stripe_checkout_session_id', checkout_session_id);

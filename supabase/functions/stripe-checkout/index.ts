@@ -9,6 +9,7 @@ const stripe = new Stripe(stripeSecret, {
     name: 'Bolt Integration',
     version: '1.0.0',
   },
+  apiVersion: '2024-06-20',
 });
 
 const corsHeaders = {
@@ -46,15 +47,18 @@ Deno.serve(async (req) => {
       return corsResponse({ error: 'Missing required parameter success_url or cancel_url' }, 400);
     }
 
-    const authHeader = req.headers.get('Authorization')!;
-    const token = authHeader.replace('Bearer ', '');
-    const {
-      data: { user },
-      error: getUserError,
-    } = await supabase.auth.getUser(token);
-
-    if (getUserError || !user) {
-      return corsResponse({ error: 'Sign in to buy NFTs' }, 401);
+    // Guests can buy: a valid Bearer token links the purchase to an account,
+    // but no account is required. Stripe collects the buyer's email instead.
+    let userId: string | null = null;
+    let userEmail = '';
+    const authHeader = req.headers.get('Authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      const token = authHeader.replace('Bearer ', '');
+      const { data } = await supabase.auth.getUser(token);
+      if (data.user) {
+        userId = data.user.id;
+        userEmail = data.user.email ?? '';
+      }
     }
 
     // Price and availability come from the server's own table, never the client.
@@ -68,62 +72,80 @@ Deno.serve(async (req) => {
       return corsResponse({ error: 'NFT not found' }, 404);
     }
 
-    if (nft.minted_count >= nft.total_supply) {
-      return corsResponse({ error: 'Sold out' }, 409);
-    }
-
     const mintPrice = Number(nft.mint_price);
     if (!Number.isFinite(mintPrice) || mintPrice <= 0) {
       return corsResponse({ error: 'NFT has no valid mint price' }, 500);
     }
 
-    const { data: customer, error: getCustomerError } = await supabase
-      .from('stripe_customers')
-      .select('customer_id')
-      .eq('user_id', user.id)
-      .is('deleted_at', null)
-      .maybeSingle();
+    // Pending checkouts from the last 32 minutes hold stock while the buyer
+    // pays, so two buyers cannot be charged for the same last card.
+    const reservationCutoff = new Date(Date.now() - 32 * 60 * 1000).toISOString();
+    const { count: pendingCount, error: pendingError } = await supabase
+      .from('nft_sales')
+      .select('id', { count: 'exact', head: true })
+      .eq('nft_id', nft.id)
+      .eq('status', 'pending')
+      .gte('created_at', reservationCutoff);
 
-    if (getCustomerError) {
-      console.error('Failed to fetch customer information from the database', getCustomerError);
-      return corsResponse({ error: 'Failed to fetch customer information' }, 500);
+    if (pendingError) {
+      console.error('Failed to count pending checkouts', pendingError);
     }
 
-    let customerId;
+    const available = nft.total_supply - nft.minted_count - (pendingCount ?? 0);
+    if (available <= 0) {
+      return corsResponse({ error: 'Sold out' }, 409);
+    }
 
-    if (!customer || !customer.customer_id) {
-      const newCustomer = await stripe.customers.create({
-        email: user.email,
-        metadata: {
-          userId: user.id,
-        },
-      });
+    // Returning customers reuse their Stripe customer; guests pay without one.
+    let customerId: string | undefined;
+    if (userId) {
+      const { data: customer, error: getCustomerError } = await supabase
+        .from('stripe_customers')
+        .select('customer_id')
+        .eq('user_id', userId)
+        .is('deleted_at', null)
+        .maybeSingle();
 
-      console.log(`Created new Stripe customer ${newCustomer.id} for user ${user.id}`);
-
-      const { error: createCustomerError } = await supabase.from('stripe_customers').insert({
-        user_id: user.id,
-        customer_id: newCustomer.id,
-      });
-
-      if (createCustomerError) {
-        console.error('Failed to save customer information in the database', createCustomerError);
-        try {
-          await stripe.customers.del(newCustomer.id);
-        } catch (deleteError) {
-          console.error('Failed to clean up after customer mapping error:', deleteError);
-        }
-        return corsResponse({ error: 'Failed to create customer mapping' }, 500);
+      if (getCustomerError) {
+        console.error('Failed to fetch customer information from the database', getCustomerError);
+        return corsResponse({ error: 'Failed to fetch customer information' }, 500);
       }
 
-      customerId = newCustomer.id;
-    } else {
-      customerId = customer.customer_id;
+      if (!customer || !customer.customer_id) {
+        const newCustomer = await stripe.customers.create({
+          email: userEmail || undefined,
+          metadata: {
+            userId,
+          },
+        });
+
+        console.log(`Created new Stripe customer ${newCustomer.id} for user ${userId}`);
+
+        const { error: createCustomerError } = await supabase.from('stripe_customers').insert({
+          user_id: userId,
+          customer_id: newCustomer.id,
+        });
+
+        if (createCustomerError) {
+          console.error('Failed to save customer information in the database', createCustomerError);
+          try {
+            await stripe.customers.del(newCustomer.id);
+          } catch (deleteError) {
+            console.error('Failed to clean up after customer mapping error:', deleteError);
+          }
+          return corsResponse({ error: 'Failed to create customer mapping' }, 500);
+        }
+
+        customerId = newCustomer.id;
+      } else {
+        customerId = customer.customer_id;
+      }
     }
 
+    // No payment_method_types list: Stripe's automatic methods include card,
+    // Apple Pay, Google Pay and Link, so buyers get one-click options.
     const session = await stripe.checkout.sessions.create({
-      customer: customerId,
-      payment_method_types: ['card'],
+      ...(customerId ? { customer: customerId } : { customer_creation: 'always' }),
       line_items: [
         {
           price_data: {
@@ -139,19 +161,21 @@ Deno.serve(async (req) => {
         },
       ],
       mode: 'payment',
+      // Abandoned checkouts expire after 31 minutes, freeing the reserved card.
+      expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
       success_url,
       cancel_url,
       metadata: {
         nft_id: nft.id,
-        buyer_user_id: user.id,
-        buyer_email: user.email ?? '',
+        buyer_user_id: userId ?? '',
+        buyer_email: userEmail,
       },
     });
 
     const { error: saleInsertError } = await supabase.from('nft_sales').insert({
       nft_id: nft.id,
-      buyer_user_id: user.id,
-      buyer_email: user.email ?? '',
+      buyer_user_id: userId,
+      buyer_email: userEmail,
       stripe_checkout_session_id: session.id,
       amount_total: Math.round(mintPrice * 100),
       currency: 'usd',
@@ -162,7 +186,7 @@ Deno.serve(async (req) => {
       console.error('Failed to record pending sale', saleInsertError);
     }
 
-    console.log(`Created NFT checkout session ${session.id} for customer ${customerId}`);
+    console.log(`Created NFT checkout session ${session.id} for customer ${customerId ?? 'guest'}`);
 
     return corsResponse({ sessionId: session.id, url: session.url });
   } catch (error: any) {

@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Gem, Sparkles, Flame, Check, Loader2, Share2, Download, X, TrendingUp, Copy, ExternalLink, ShieldCheck, Lock, Zap } from 'lucide-react';
+import { Gem, Sparkles, Flame, Check, Loader2, Share2, Download, X, TrendingUp, Copy, ExternalLink, ShieldCheck, Zap } from 'lucide-react';
 import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { FACTIONS } from '@/lib/constants';
-import { signInWithEmail, signUpWithEmail } from '@/lib/operatorAuth';
 
 interface RecentSale {
   card_name: string;
@@ -47,10 +46,8 @@ export default function NFTCollection() {
   const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<NFTCard | null>(null);
   const [copied, setCopied] = useState(false);
-  const [signedIn, setSignedIn] = useState(false);
   const [buyingId, setBuyingId] = useState<string | null>(null);
   const [buyError, setBuyError] = useState('');
-  const [pendingBuy, setPendingBuy] = useState<string | null>(null);
   const [purchaseComplete, setPurchaseComplete] = useState(false);
   const [recentSales, setRecentSales] = useState<RecentSale[]>([]);
 
@@ -90,31 +87,23 @@ export default function NFTCollection() {
   }, [fetchNFTs, fetchRecentSales]);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSignedIn(!!data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => setSignedIn(!!session));
     if (new URLSearchParams(window.location.search).get('nft') === 'success') {
       setPurchaseComplete(true);
       window.history.replaceState({}, '', window.location.pathname);
     }
-    return () => sub.subscription.unsubscribe();
   }, []);
 
   async function handleBuy(nft: NFTCard) {
     setBuyError('');
-    const { data } = await supabase.auth.getSession();
-    if (!data.session) {
-      setPendingBuy(nft.id);
-      return;
-    }
     setBuyingId(nft.id);
     try {
       const origin = `${window.location.origin}${window.location.pathname}`;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const { data } = await supabase.auth.getSession();
+      if (data.session) headers.Authorization = `Bearer ${data.session.access_token}`;
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-checkout`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${data.session.access_token}`,
-        },
+        headers,
         body: JSON.stringify({
           nft_id: nft.id,
           success_url: `${origin}?nft=success`,
@@ -130,14 +119,6 @@ export default function NFTCollection() {
       setBuyError(cause instanceof Error ? cause.message : 'Checkout could not start. Please try again.');
       setBuyingId(null);
     }
-  }
-
-  function handleSignedIn() {
-    setSignedIn(true);
-    const id = pendingBuy;
-    setPendingBuy(null);
-    const nft = id ? nfts.find(n => n.id === id) : undefined;
-    if (nft) void handleBuy(nft);
   }
 
   function handleShare() {
@@ -174,7 +155,6 @@ export default function NFTCollection() {
     <section className="space-y-5">
       {purchaseComplete && <p className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300"><ShieldCheck className="h-4 w-4" /> Payment received — your card is reserved. It may take a few seconds to appear as minted.</p>}
       {buyError && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{buyError}</p>}
-      {pendingBuy && <BuyerAuthPanel onSignedIn={handleSignedIn} />}
       {loadError && <p role="alert" className="rounded-lg border border-red-500/30 p-3 text-sm text-red-300">{loadError}<button onClick={() => void fetchNFTs()} className="ml-3 underline">Retry</button></p>}
       {/* Hero Banner */}
       <div className="relative overflow-hidden rounded-2xl border border-amber-500/20 bg-gradient-to-br from-zinc-900 via-zinc-950 to-black p-6">
@@ -513,91 +493,4 @@ function formatTimeAgo(iso: string): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
-}
-
-function BuyerAuthPanel({ onSignedIn }: { onSignedIn: () => void }) {
-  const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError('');
-    if (!email.trim() || password.length < 6) {
-      setError('Enter your email and a password of at least 6 characters.');
-      return;
-    }
-    setSubmitting(true);
-    try {
-      if (mode === 'sign-in') {
-        await signInWithEmail(email.trim(), password);
-      } else {
-        await signUpWithEmail(email.trim(), password);
-      }
-      onSignedIn();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Sign-in failed. Please try again.');
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <div className="mx-auto max-w-md rounded-2xl border border-amber-500/30 bg-zinc-900/60 p-6">
-      <div className="mb-4 flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 text-amber-400">
-          <Lock className="h-5 w-5" />
-        </div>
-        <div>
-          <h3 className="text-sm font-semibold text-zinc-100">Create a free account to buy</h3>
-          <p className="text-xs text-zinc-500">Your purchase and card are tied to this account.</p>
-        </div>
-      </div>
-      <form onSubmit={handleSubmit} className="space-y-3">
-        <div className="grid grid-cols-2 gap-1 rounded-lg bg-zinc-950 p-1">
-          {(['sign-in', 'sign-up'] as const).map(option => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => { setMode(option); setError(''); }}
-              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                mode === option ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              {option === 'sign-in' ? 'Sign in' : 'Create account'}
-            </button>
-          ))}
-        </div>
-        <input
-          type="email"
-          autoComplete="email"
-          placeholder="Email"
-          value={email}
-          onChange={e => setEmail(e.target.value)}
-          className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-amber-500/60"
-          required
-        />
-        <input
-          type="password"
-          autoComplete={mode === 'sign-in' ? 'current-password' : 'new-password'}
-          placeholder="Password (6+ characters)"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-amber-500/60"
-          minLength={6}
-          required
-        />
-        {error && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</p>}
-        <button
-          type="submit"
-          disabled={submitting}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-bold text-black transition-colors hover:bg-amber-400 disabled:opacity-60"
-        >
-          {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-          {mode === 'sign-in' ? 'Sign in & continue' : 'Create account & continue'}
-        </button>
-      </form>
-    </div>
-  );
 }

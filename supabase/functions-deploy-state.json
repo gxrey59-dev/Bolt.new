@@ -23,11 +23,11 @@
     },
     "stripe-checkout": {
       "hasChanged": false,
-      "hash": "1a3d3cabe45ef16abc4d93c51a413c18eb0d79eeb09f6524b06f09ec9044bf5e"
+      "hash": "c376b886fadf058fa86a974e3247801d3de61048202d203c686d9b19d754fd1e"
     },
     "stripe-webhook": {
       "hasChanged": false,
-      "hash": "a3cb1cc35733c22c70279efda2bb59c331f9d3235608872ae5fe7a277bd9b583"
+      "hash": "42c78a8fc955141f1b5cd5e857b59ec9e3f3831d1f2d6de0b428b1fc07824b98"
     },
     "swarm-wallet": {
       "hasChanged": false,
