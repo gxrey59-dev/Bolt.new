@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildOracleReading, rankStrategies, ORACLE_MIN_SAMPLE } from './oracleReading.ts';
+import { buildOracleReading, rankStrategies, ORACLE_MIN_SAMPLE, ORACLE_HORIZON } from './oracleReading.ts';
 
-const base = { safety: 'green' as const, closedTrades: 30, wins: 18, losses: 12, winRate: 60, avgWin: 2, avgLoss: 1, profitFactor: 3 };
+const base = { safety: 'green' as const, closedTrades: 30, wins: 18, losses: 12, winRate: 60, avgWin: 2, avgLoss: 1, profitFactor: 3, dailyLossRoom: 10 };
 
 test('kill switch halts the oracle regardless of performance', () => {
   assert.equal(buildOracleReading({ ...base, safety: 'red' }).verdict, 'halt');
@@ -27,6 +27,19 @@ test('no decided trades yields no expected value', () => {
   const reading = buildOracleReading({ ...base, closedTrades: 25, wins: 0, losses: 0, winRate: null });
   assert.equal(reading.expectedValue, null);
   assert.equal(reading.verdict, 'caution');
+});
+test('outlook projects ten trades ahead using expected value per trade', () => {
+  const { outlook } = buildOracleReading(base);
+  assert.equal(outlook.length, ORACLE_HORIZON);
+  assert.ok(Math.abs(outlook[9].expectedCumulative - 8) < 1e-9);
+});
+test('losses to daily limit divide remaining room by average loss', () => {
+  assert.equal(buildOracleReading({ ...base, dailyLossRoom: 7, avgLoss: 2 }).lossesToLimit, 3);
+  assert.equal(buildOracleReading({ ...base, dailyLossRoom: null }).lossesToLimit, null);
+});
+test('no outlook without a measurable expected value', () => {
+  const reading = buildOracleReading({ ...base, wins: 0, losses: 0, winRate: null });
+  assert.deepEqual(reading.outlook, []);
 });
 test('strategies rank by win rate then sample size', () => {
   const ranked = rankStrategies({

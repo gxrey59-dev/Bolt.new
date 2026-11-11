@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Eye, ShieldCheck, ShieldAlert, Sparkles, Hourglass, TrendingUp, Percent, Target, Shield } from 'lucide-react';
+import { Brain, Eye, ShieldCheck, ShieldAlert, Sparkles, Hourglass, TrendingUp, Percent, Target, Shield } from 'lucide-react';
 import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import { assessTradingStatus } from '@/lib/riskStatus';
@@ -72,6 +72,8 @@ export default function TradingOracle() {
   const safety = assessTradingStatus(config, failed, false);
   const stats = recordedTradeStats(history);
   const historyAvailable = loaded && !historyError;
+  const dailyLossLimit = config && config.liveCapital > 0 ? config.liveCapital * config.maxDailyLossPct / 100 : null;
+  const dailyLossRoom = config && dailyLossLimit !== null ? Math.max(dailyLossLimit - config.dailyLossAccumulator, 0) : null;
   const reading = buildOracleReading({
     safety: safety.level === 'green' ? 'green' : safety.level === 'red' ? 'red' : 'yellow',
     closedTrades: history.length,
@@ -81,11 +83,11 @@ export default function TradingOracle() {
     avgWin: stats.avgWin,
     avgLoss: stats.avgLoss,
     profitFactor: stats.profitFactor,
+    dailyLossRoom,
   });
   const style = VERDICT_STYLE[reading.verdict];
   const VerdictIcon = style.Icon;
-  const dailyLossLimit = config && config.liveCapital > 0 ? config.liveCapital * config.maxDailyLossPct / 100 : null;
-  const dailyLossRoom = config && dailyLossLimit !== null ? Math.max(dailyLossLimit - config.dailyLossAccumulator, 0) : null;
+  const outlookMax = Math.max(...reading.outlook.map(point => Math.abs(point.expectedCumulative)), 0.0001);
   const strategies = config ? rankStrategies(config.strategyWinRates ?? {}) : [];
   const dataErrors = [configError, historyError].filter(Boolean);
 
@@ -125,6 +127,40 @@ export default function TradingOracle() {
             <div className={`h-1.5 rounded-full transition-all duration-700 ${style.text.replace('text-', 'bg-')}`} style={{ width: `${reading.sampleProgress * 100}%` }} />
           </div>
         </div>
+      </div>
+
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
+        <div className="mb-4 flex items-center gap-2">
+          <Brain className="h-4 w-4 text-cyan-400" />
+          <h3 className="text-sm font-semibold text-zinc-300">Ten trades ahead</h3>
+          <span className="ml-auto text-[10px] text-zinc-600">Expected cumulative result at the current pace</span>
+        </div>
+        {reading.outlook.length === 0 ? (
+          <p className="py-4 text-center text-xs text-zinc-600">Projection appears once there are enough recorded trades.</p>
+        ) : (
+          <>
+            <div className="flex h-28 items-end gap-1.5">
+              {reading.outlook.map(point => (
+                <div key={point.step} className="flex flex-1 flex-col items-center gap-1.5" title={`After ${point.step} trades: ${point.expectedCumulative.toFixed(4)} USDT`}>
+                  <div className="flex h-20 w-full items-end">
+                    <div
+                      className={`w-full rounded-t transition-all duration-500 ${point.expectedCumulative >= 0 ? 'bg-emerald-500/70' : 'bg-red-500/70'}`}
+                      style={{ height: `${Math.max(Math.abs(point.expectedCumulative) / outlookMax * 100, 4)}%` }}
+                    />
+                  </div>
+                  <span className="text-[9px] tabular-nums text-zinc-600">{point.step}</span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-3 text-xs text-zinc-400">
+              {reading.lossesToLimit === null
+                ? 'The daily loss limit is not available yet.'
+                : reading.lossesToLimit === 0
+                  ? 'Today\'s loss limit is already reached.'
+                  : `A run of ${reading.lossesToLimit} losing trades in a row would reach today's loss limit.`}
+            </p>
+          </>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

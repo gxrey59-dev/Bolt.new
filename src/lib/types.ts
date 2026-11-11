@@ -210,4 +210,4 @@ export interface StrategyConfig {
   updated_at: string;
 }
 
-export type TabId = 'overview' | 'command' | 'dashboard' | 'performance' | 'table' | 'operations' | 'live' | 'nft' | 'swarm' | 'swarm-wallet' | 'revenue' | 'withdrawal' | 'sprint' | 'roadmap' | 'execution' | 'signals-pro' | 'oracle';
+export type TabId = 'overview' | 'command' | 'dashboard' | 'performance' | 'table' | 'operations' | 'live' | 'nft' | 'swarm' | 'swarm-wallet' | 'revenue' | 'withdrawal' | 'sprint' | 'roadmap' | 'execution' | 'signals-pro';

@@ -10,6 +10,7 @@ import { FACTIONS, TRADING_PAIRS } from '@/lib/constants';
 import { operatorFetch } from '@/lib/operatorAuth';
 import { fetchOpenPositions, closeAllPositions, runStrategyScan, fetchLivePrices } from '@/lib/engine';
 import type { OpenPosition, PaperTrade } from '@/lib/types';
+import TradingOracle from '@/components/TradingOracle';
 import { describeClosePositions, positionUnrealizedPnl, totalPositionPnl, recordedTradeStats, readTradingResponse } from '@/lib/tradingStatus';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -205,6 +206,8 @@ export default function LiveTradingDashboard() {
 
   return (
     <section className="space-y-5">
+      <TradingOracle />
+
       {/* Header Bar */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">

@@ -1,6 +1,7 @@
 export type OracleVerdict = 'proceed' | 'caution' | 'halt' | 'learning';
 
 export const ORACLE_MIN_SAMPLE = 20;
+export const ORACLE_HORIZON = 10;
 
 export interface OracleInput {
   safety: 'green' | 'yellow' | 'red';
@@ -11,6 +12,12 @@ export interface OracleInput {
   avgWin: number;
   avgLoss: number;
   profitFactor: number | null;
+  dailyLossRoom: number | null;
+}
+
+export interface OutlookPoint {
+  step: number;
+  expectedCumulative: number;
 }
 
 export interface OracleReading {
@@ -18,6 +25,8 @@ export interface OracleReading {
   headline: string;
   expectedValue: number | null;
   sampleProgress: number;
+  outlook: OutlookPoint[];
+  lossesToLimit: number | null;
 }
 
 export function buildOracleReading(input: OracleInput): OracleReading {
@@ -26,20 +35,27 @@ export function buildOracleReading(input: OracleInput): OracleReading {
     ? null
     : (input.winRate / 100) * input.avgWin - (1 - input.winRate / 100) * input.avgLoss;
   const sampleProgress = Math.min(input.closedTrades / ORACLE_MIN_SAMPLE, 1);
+  const outlook = expectedValue === null
+    ? []
+    : Array.from({ length: ORACLE_HORIZON }, (_, i) => ({ step: i + 1, expectedCumulative: expectedValue * (i + 1) }));
+  const lossesToLimit = input.dailyLossRoom === null || input.avgLoss <= 0
+    ? null
+    : Math.floor(input.dailyLossRoom / input.avgLoss);
+  const base = { expectedValue, sampleProgress, outlook, lossesToLimit };
 
   if (input.safety === 'red') {
-    return { verdict: 'halt', headline: 'Stand down: trading is halted', expectedValue, sampleProgress };
+    return { verdict: 'halt', headline: 'Stand down: trading is halted', ...base };
   }
   if (input.closedTrades < ORACLE_MIN_SAMPLE) {
-    return { verdict: 'learning', headline: `Still learning: ${input.closedTrades} of ${ORACLE_MIN_SAMPLE} closed trades`, expectedValue, sampleProgress };
+    return { verdict: 'learning', headline: `Still learning: ${input.closedTrades} of ${ORACLE_MIN_SAMPLE} closed trades`, ...base };
   }
   if (expectedValue === null || expectedValue <= 0 || (input.profitFactor !== null && input.profitFactor < 1)) {
-    return { verdict: 'caution', headline: 'The edge is not proven yet', expectedValue, sampleProgress };
+    return { verdict: 'caution', headline: 'The edge is not proven yet', ...base };
   }
   if (input.safety === 'yellow') {
-    return { verdict: 'caution', headline: 'The edge looks positive, but safety checks are watching', expectedValue, sampleProgress };
+    return { verdict: 'caution', headline: 'The edge looks positive, but safety checks are watching', ...base };
   }
-  return { verdict: 'proceed', headline: 'Conditions favor continued trading', expectedValue, sampleProgress };
+  return { verdict: 'proceed', headline: 'Conditions favor continued trading', ...base };
 }
 
 export function rankStrategies(stats: Record<string, { winRate: number; totalTrades: number }>) {

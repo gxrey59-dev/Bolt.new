@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useCallback, useEffect } from 'react';
-import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3, ArrowUpFromLine, Activity, Wallet, ArrowLeft, Rss, Eye } from 'lucide-react';
+import { LayoutDashboard, Monitor, Table, Settings, Radio, Gem, Network, Crown, Flame, Target, BarChart3, ArrowUpFromLine, Activity, Wallet, ArrowLeft, Rss } from 'lucide-react';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import type { TabId, Faction, Signal, Sweep, CircuitBreaker, Sentiment, AuditEntry } from '@/lib/types';
 import Header from '@/components/Header';
@@ -36,7 +36,6 @@ const RevenueSprintDashboard = lazy(() => import('@/components/RevenueSprintDash
 const BillionRoadmap = lazy(() => import('@/components/BillionRoadmap'));
 const WithdrawalPanel = lazy(() => import('@/components/WithdrawalPanel'));
 const LiveExecutionDashboard = lazy(() => import('@/components/LiveExecutionDashboard'));
-const TradingOracle = lazy(() => import('@/components/TradingOracle'));
 
 const SignalsPro = lazy(() => import('@/components/SignalsPro'));
 
@@ -47,7 +46,6 @@ const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'sprint', label: '24h Sprint', icon: Flame },
   { id: 'live', label: 'Live Terminal', icon: Radio },
-  { id: 'oracle', label: 'Oracle', icon: Eye },
   { id: 'execution', label: 'Live Execution', icon: Activity },
   { id: 'command', label: 'Command Center', icon: Monitor },
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -192,12 +190,6 @@ export default function App() {
           {tab === 'live' && (
             <OperatorGate status={operatorStatus}>
               <LiveTradingDashboard />
-            </OperatorGate>
-          )}
-
-          {tab === 'oracle' && (
-            <OperatorGate status={operatorStatus}>
-              <TradingOracle />
             </OperatorGate>
           )}
 
