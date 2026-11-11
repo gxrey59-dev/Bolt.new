@@ -11,6 +11,10 @@ test('unavailable service does not claim the kill switch is on', () => {
   assert.equal(status.level, 'yellow');
   assert.equal(status.title, 'Trading status unavailable');
 });
+test('live mode reason does not assert exchange verification status', () => {
+  const status = assessTradingStatus({ paperMode: false, killSwitch: false, liveCapital: 10, maxDailyLossPct: 5, dailyLossAccumulator: 0 }, false, false);
+  assert.equal(status.reasons[0], 'Live mode is configured.');
+});
 test('confirmed kill switch always takes priority', () => {
   assert.equal(assessTradingStatus({ paperMode: true, killSwitch: true }, false, false).level, 'red');
 });

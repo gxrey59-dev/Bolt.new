@@ -12,7 +12,7 @@ export function assessTradingStatus(config: FeedConfig | null, failed: boolean, 
   if (failed) return { level: 'yellow' as const, title: 'Trading status unavailable', reasons: ['Could not reach the trading service. Current controls are unverified.'], checkedAt };
   if (!config) return { level: 'yellow' as const, title: 'Checking trading status', reasons: ['Waiting for the trading service.'], checkedAt: null };
   if (config.killSwitch) return { level: 'red' as const, title: 'Kill switch active — trading halted', reasons: [config.killSwitchReason || 'The kill switch is active.'], checkedAt };
-  const reasons = [config.paperMode ? 'Paper mode is configured.' : 'Live mode is configured. Exchange holdings require account verification.'];
+  const reasons = [config.paperMode ? 'Paper mode is configured.' : 'Live mode is configured.'];
   let caution = !config.paperMode || stale;
   const capital = config.liveCapital;
   if (!config.paperMode && capital != null && capital > 0 && config.dailyLossAccumulator != null && config.maxDailyLossPct != null && config.maxDailyLossPct > 0) {
