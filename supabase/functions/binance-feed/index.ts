@@ -947,7 +947,7 @@ interface PriceData {
   low: number;
 }
 
-async function checkOpenPositions(currentPrices: Map<string, number>, config: FullConfig, priceData?: Map<string, PriceData>): Promise<{ closed: number; totalLoss: number }> {
+async function checkOpenPositions(currentPrices: Map<string, number>, config: FullConfig, priceData?: Map<string, PriceData>, bearishExitSymbols: Set<string> = new Set()): Promise<{ closed: number; totalLoss: number }> {
   const { data: openTrades, error: positionsError } = await supabase.from("paper_trades").select("*").eq("status", "open");
   if (positionsError) throw new Error(`Open positions unavailable: ${positionsError.message}`);
   if (!Array.isArray(openTrades)) throw new Error("Open positions response was invalid");
@@ -1020,6 +1020,10 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
     if (hoursOpen >= 48) {
       shouldClose = true;
       closeReason = `Time exit (${hoursOpen.toFixed(0)}h open)`;
+    }
+    else if (isLong && trade.is_live === true && bearishExitSymbols.has(trade.symbol)) {
+      shouldClose = true;
+      closeReason = "Bearish short signal — position sold, no new entry";
     }
     // Hard and trailing stops are always active. Delaying a live stop can turn a
     // bounded loss into an unbounded one during the first minutes of a trade.
@@ -1541,6 +1545,7 @@ Deno.serve(async (req: Request) => {
       const currentPrices = new Map<string, number>();
       const priceDataMap = new Map<string, PriceData>();
       const tradesOpened: string[] = [];
+      const bearishSymbols = new Set<string>();
       const allowedFactionsBySymbol = await getAllowedFactionsBySymbol();
       const liveTickers = await fetchTickers(TRADING_PAIRS);
       const liveTickerMap = new Map(liveTickers.map((ticker) => [ticker.symbol, ticker]));
@@ -1577,11 +1582,12 @@ Deno.serve(async (req: Request) => {
         });
 
         if (signal) {
-          // In live mode: only take long positions (spot exchange can't short)
+          // Live mode is spot-only: a bearish signal sells any held position and opens nothing
           if (!config.paperMode && signal.side === "short") {
+            bearishSymbols.add(symbol);
             signals.push({
               symbol, faction: await pickFaction(symbol), strategy: signal.strategy, side: signal.side,
-              reasoning: signal.reasoning + " [skipped: live mode long-only]", price: currentPrice, strength: signal.strength,
+              reasoning: signal.reasoning + " [bearish: exit held position, no new long]", price: currentPrice, strength: signal.strength,
               tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
             });
             continue;
@@ -1706,7 +1712,7 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      const { closed, totalLoss } = await checkOpenPositions(currentPrices, config, priceDataMap);
+      const { closed, totalLoss } = await checkOpenPositions(currentPrices, config, priceDataMap, bearishSymbols);
 
       // Check if daily loss limit was hit after closing trades
       if (totalLoss > 0) {
