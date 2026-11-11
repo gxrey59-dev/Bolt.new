@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, type FormEvent } from 'react';
 import { Zap, Check, Loader2, Crown, Lock, Unlock, TrendingUp, Radio, ShieldCheck } from 'lucide-react';
 import { supabase, hasDatabaseAccess } from '@/lib/supabase';
+import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import { signInWithEmail, signUpWithEmail } from '@/lib/operatorAuth';
 
 interface SubscriptionState {
-  status: 'loading' | 'none' | 'active' | 'canceled';
+  status: 'loading' | 'unavailable' | 'none' | 'active' | 'canceled';
   current_period_end?: number;
+  cancel_at_period_end?: boolean;
 }
 
 interface PremiumSignal {
@@ -29,10 +31,13 @@ export default function SignalsPro() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
+  const [portalBusy, setPortalBusy] = useState(false);
+  const checkoutReturned = new URLSearchParams(window.location.search).get('subscription') === 'pending';
 
   const loadSubscription = useCallback(async () => {
     if (!hasDatabaseAccess) {
-      setSub({ status: 'none' });
+      setSub({ status: 'unavailable' });
+      setError('Billing is unavailable until the app connection is configured.');
       return;
     }
     const { data: sessionData } = await supabase.auth.getSession();
@@ -44,13 +49,14 @@ export default function SignalsPro() {
     setNeedsAuth(false);
     const { data, error: subError } = await supabase
       .from('stripe_user_subscriptions')
-      .select('subscription_status, current_period_end')
+      .select('subscription_status, current_period_end, cancel_at_period_end')
       .maybeSingle();
     if (subError) {
-      setError('Could not load your subscription state.');
-      setSub({ status: 'none' });
+      setError('Could not load your subscription state. Please retry before starting another purchase.');
+      setSub({ status: 'unavailable' });
       return;
     }
+    setError(previous => previous.startsWith('Could not load your subscription state.') ? '' : previous);
     if (!data) {
       setSub({ status: 'none' });
       return;
@@ -61,11 +67,18 @@ export default function SignalsPro() {
     setSub({
       status: active ? 'active' : 'canceled',
       current_period_end: Number(data.current_period_end ?? 0),
+      cancel_at_period_end: Boolean(data.cancel_at_period_end),
     });
   }, []);
 
+  useVisibilityPolling(loadSubscription, 15_000);
+
   useEffect(() => {
-    void loadSubscription();
+    const { data } = supabase.auth.onAuthStateChange(() => {
+      // Defer to avoid calling auth methods while its event lock is held.
+      setTimeout(() => void loadSubscription(), 0);
+    });
+    return () => data.subscription.unsubscribe();
   }, [loadSubscription]);
 
   const fetchSignals = useCallback(async () => {
@@ -87,16 +100,16 @@ export default function SignalsPro() {
     }
   }, []);
 
-  useEffect(() => {
-    if (sub.status === 'active') void fetchSignals();
-  }, [sub.status, fetchSignals]);
+  useVisibilityPolling(fetchSignals, 30_000, sub.status === 'active');
 
-  async function handleSubscribe() {
-    setBuying(true);
+  async function handleSubscribe(manage = false) {
+    if (!hasDatabaseAccess) { setError('Billing connection is unavailable.'); return; }
+    if (manage) setPortalBusy(true); else setBuying(true);
     setError('');
     try {
       const { data: sessionData } = await supabase.auth.getSession();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (!sessionData.session) { setNeedsAuth(true); throw new Error('Sign in before opening billing.'); }
+      const headers: Record<string, string> = { 'Content-Type': 'application/json', apikey: import.meta.env.VITE_SUPABASE_ANON_KEY };
       if (sessionData.session) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
       const origin = `${window.location.origin}${window.location.pathname}`;
       const response = await fetch(
@@ -106,17 +119,21 @@ export default function SignalsPro() {
           headers,
           body: JSON.stringify({
             tier: 'pro',
-            success_url: `${origin}#signals-pro`,
+            action: manage ? 'portal' : 'checkout',
+            success_url: `${origin}?subscription=pending#signals-pro`,
             cancel_url: `${origin}#signals-pro`,
           }),
         },
       );
       const body: { url?: string; error?: string } = await response.json().catch(() => ({}));
       if (!response.ok || !body.url) throw new Error(body.error ?? 'Checkout could not start.');
+      const destination = new URL(body.url);
+      if (destination.protocol !== 'https:' || !['checkout.stripe.com', 'billing.stripe.com'].includes(destination.hostname)) throw new Error('Unexpected billing destination.');
       window.location.href = body.url;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Checkout could not start.');
       setBuying(false);
+      setPortalBusy(false);
     }
   }
 
@@ -134,7 +151,7 @@ export default function SignalsPro() {
         await signInWithEmail(authEmail.trim(), authPassword);
       } else {
         await signUpWithEmail(authEmail.trim(), authPassword);
-        setAuthNotice('Account created. You can now subscribe.');
+        setAuthNotice('Account created. If email confirmation is required, confirm your email and sign in to continue.');
       }
       setAuthPassword('');
       await loadSubscription();
@@ -201,6 +218,8 @@ export default function SignalsPro() {
 
   return (
     <section className="space-y-5">
+      {checkoutReturned && sub.status !== 'active' && <p role="status" className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4 text-sm text-cyan-200">Checkout returned. Waiting for verified billing confirmation before enabling Pro. Your status refreshes automatically.</p>}
+      {!needsAuth && hasDatabaseAccess && <button onClick={() => void handleSubscribe(true)} disabled={portalBusy || sub.status === 'loading'} className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 disabled:opacity-50">{portalBusy ? 'Opening billing…' : 'Manage billing'}</button>}
       {error && (
         <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
           {error}
@@ -227,13 +246,13 @@ export default function SignalsPro() {
             <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
               <div className="flex items-center gap-2 font-bold"><Unlock className="h-4 w-4" /> Pro active</div>
               <p className="mt-1 text-xs text-emerald-400/80">
-                Renews {sub.current_period_end ? new Date(sub.current_period_end * 1000).toLocaleDateString() : '—'}
+                {sub.cancel_at_period_end ? 'Access until' : 'Renews'} {sub.current_period_end ? new Date(sub.current_period_end * 1000).toLocaleDateString() : '—'}
               </p>
             </div>
           ) : (
             <button
               onClick={() => void handleSubscribe()}
-              disabled={buying}
+              disabled={buying || sub.status === 'loading' || sub.status === 'unavailable'}
               className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-cyan-500/25 transition-all hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {buying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}

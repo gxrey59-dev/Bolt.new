@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Activity, BarChart3, Percent, Trophy, Wallet, Clock } from 'lucide-react';
-import { hasDatabaseAccess, supabase } from '@/lib/supabase';
+import { hasDatabaseAccess } from '@/lib/supabase';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
+import { loadRevenueTrades } from '@/lib/revenueData';
+import { isVerifiedClose, type RevenueTrade } from '@/lib/revenueAccounting';
 import { FACTIONS } from '@/lib/constants';
 import {
   PERFORMANCE_WINDOWS,
@@ -9,7 +11,6 @@ import {
   buildFactionPerformance,
   parseDbTimestamp,
   type PerformanceWindow,
-  type TradeRecord,
 } from '@/lib/factionPerformance';
 import type { Faction } from '@/lib/types';
 
@@ -48,10 +49,11 @@ function timeAgo(stamp: string | null): string {
 }
 
 export default function FactionPerformanceDashboard({ factions }: Props) {
-  const [trades, setTrades] = useState<TradeRecord[]>([]);
+  const [trades, setTrades] = useState<RevenueTrade[]>([]);
   const [windowId, setWindowId] = useState<PerformanceWindow>('7d');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
 
   const fetchTrades = useCallback(async () => {
     if (!hasDatabaseAccess) {
@@ -59,30 +61,25 @@ export default function FactionPerformanceDashboard({ factions }: Props) {
       setLoading(false);
       return;
     }
-    const { data, error: queryError } = await supabase
-      .from('paper_trades')
-      .select('faction_id, status, pnl, opened_at, closed_at')
-      .eq('is_live', true)
-      .order('opened_at', { ascending: false })
-      .limit(5000);
-    if (queryError) {
-      setError('Trade history could not be loaded. Retrying shortly.');
-      setLoading(false);
-      return;
-    }
-    setTrades((data ?? []) as TradeRecord[]);
-    setError('');
-    setLoading(false);
+    try {
+      setTrades(await loadRevenueTrades());
+      setFetchedAt(new Date().toISOString());
+      setError('');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Trade history is unavailable.');
+    } finally { setLoading(false); }
   }, []);
 
   useVisibilityPolling(fetchTrades, 30_000);
 
+  const verifiedTrades = useMemo(() => trades.filter(t => t.status === 'open' || isVerifiedClose(t)).map(t => ({ ...t, status: t.status === 'open' ? 'open' as const : 'closed' as const, pnl: Number(t.pnl) })), [trades]);
+  const pendingCount = trades.filter(t => t.status === 'closed' && !isVerifiedClose(t)).length;
   const rows = useMemo(() => {
-    const ids = FACTIONS.map(f => f.id);
-    return buildFactionPerformance(trades, ids, windowId).sort((a, b) => b.realizedPnl - a.realizedPnl);
-  }, [trades, windowId]);
+    const ids = [...new Set([...FACTIONS.map(f => f.id), ...verifiedTrades.map(t => t.faction_id)])];
+    return buildFactionPerformance(verifiedTrades, ids, windowId).sort((a, b) => b.realizedPnl - a.realizedPnl);
+  }, [verifiedTrades, windowId]);
 
-  const harvest = useMemo(() => buildDailyHarvest(trades, HARVEST_DAYS), [trades]);
+  const harvest = useMemo(() => buildDailyHarvest(verifiedTrades, HARVEST_DAYS), [verifiedTrades]);
 
   const totals = useMemo(() => {
     const closed = rows.reduce((s, r) => s + r.closedTrades, 0);
@@ -100,10 +97,10 @@ export default function FactionPerformanceDashboard({ factions }: Props) {
   const maxHarvestDay = Math.max(0.01, ...harvest.map(d => Math.abs(d.total)));
 
   const kpis = [
-    { label: 'Realized P&L', value: formatUsd(totals.realized), icon: Wallet, tone: pnlClass(totals.realized) },
-    { label: 'Harvested Gains', value: formatUsd(totals.harvested), icon: Trophy, tone: 'text-emerald-400' },
-    { label: 'Win Rate', value: `${totals.winRate.toFixed(1)}%`, icon: Percent, tone: 'text-zinc-100' },
-    { label: 'Open Positions', value: totals.open.toString(), icon: Activity, tone: 'text-cyan-400' },
+    { label: 'Verified P&L', value: totals.closed ? formatUsd(totals.realized) : '—', icon: Wallet, tone: pnlClass(totals.realized) },
+    { label: 'Verified gross wins', value: totals.closed ? formatUsd(totals.harvested) : '—', icon: Trophy, tone: 'text-emerald-400' },
+    { label: 'Win Rate', value: totals.closed ? `${totals.winRate.toFixed(1)}%` : '—', icon: Percent, tone: 'text-zinc-100' },
+    { label: 'Recorded open positions', value: totals.open.toString(), icon: Activity, tone: 'text-cyan-400' },
   ];
 
   return (
@@ -130,6 +127,8 @@ export default function FactionPerformanceDashboard({ factions }: Props) {
         </div>
       </div>
 
+      <p className="text-xs leading-relaxed text-zinc-400">Only live closed trades with verified accounting contribute to performance. {fetchedAt && !error ? `${pendingCount} unverified closes are excluded across the full history.` : 'Reconciliation counts are unavailable until history is loaded.'} Open counts are database records; check exchange holdings for confirmation.</p>
+      {fetchedAt && <p className="text-xs text-zinc-500">Last successful refresh {new Date(fetchedAt).toLocaleString()}</p>}
       {error ? (
         <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
           {error}
@@ -138,7 +137,7 @@ export default function FactionPerformanceDashboard({ factions }: Props) {
 
       {loading ? (
         <div className="py-16 text-center text-sm text-zinc-500">Loading trade history…</div>
-      ) : (
+      ) : error || !fetchedAt ? <p className="py-12 text-center text-sm text-zinc-500">Performance totals are unavailable.</p> : (
         <>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {kpis.map(k => {
@@ -151,7 +150,7 @@ export default function FactionPerformanceDashboard({ factions }: Props) {
                   </div>
                   <p className={`font-mono text-xl font-bold tabular-nums ${k.tone}`}>{k.value}</p>
                   <p className="mt-1 text-[11px] text-zinc-600">
-                    {totals.closed} closed trades, {totals.activity} active in window
+                    {totals.closed} verified closed trades, {totals.activity} active in window
                   </p>
                 </div>
               );
@@ -160,10 +159,10 @@ export default function FactionPerformanceDashboard({ factions }: Props) {
 
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-zinc-200">Daily Profit Harvest</h3>
+              <h3 className="text-sm font-semibold text-zinc-200">Daily verified P&L</h3>
               <span className="text-[11px] text-zinc-500">Last {HARVEST_DAYS} days</span>
             </div>
-            <svg viewBox="0 0 640 170" className="h-44 w-full" role="img" aria-label="Daily realized profit and loss">
+            {totals.closed === 0 ? <p className="py-10 text-center text-sm text-zinc-500">No verified closes in this window.</p> : <svg viewBox="0 0 640 170" className="h-44 w-full" role="img" aria-label="Daily realized profit and loss">
               <line x1="0" y1="85" x2="640" y2="85" className="stroke-zinc-700" strokeWidth="1" />
               {harvest.map((d, i) => {
                 const slot = 640 / harvest.length;
@@ -182,7 +181,7 @@ export default function FactionPerformanceDashboard({ factions }: Props) {
                   </g>
                 );
               })}
-            </svg>
+            </svg>}
           </div>
 
           <div className="overflow-x-auto rounded-xl border border-zinc-800">
@@ -192,9 +191,9 @@ export default function FactionPerformanceDashboard({ factions }: Props) {
                   <th className="px-4 py-3 font-semibold">#</th>
                   <th className="px-4 py-3 font-semibold">Faction</th>
                   <th className="px-4 py-3 font-semibold">Status</th>
-                  <th className="px-4 py-3 text-right font-semibold">Realized P&L</th>
-                  <th className="px-4 py-3 font-semibold">Harvested</th>
-                  <th className="px-4 py-3 text-right font-semibold">Leaked</th>
+                  <th className="px-4 py-3 text-right font-semibold">Verified P&L</th>
+                  <th className="px-4 py-3 font-semibold">Gross wins</th>
+                  <th className="px-4 py-3 text-right font-semibold">Gross losses</th>
                   <th className="px-4 py-3 text-right font-semibold">Win Rate</th>
                   <th className="px-4 py-3 text-right font-semibold">Profit Factor</th>
                   <th className="px-4 py-3 text-right font-semibold">Avg / Trade</th>
@@ -221,17 +220,17 @@ export default function FactionPerformanceDashboard({ factions }: Props) {
                         </span>
                       </td>
                       <td className={`px-4 py-2.5 text-right font-mono font-semibold tabular-nums ${pnlClass(r.realizedPnl)}`}>
-                        {formatUsd(r.realizedPnl)}
+                        {r.closedTrades ? formatUsd(r.realizedPnl) : '—'}
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="flex items-center gap-2">
-                          <span className="w-16 font-mono tabular-nums text-emerald-400">{formatUsd(r.harvested)}</span>
+                          <span className="w-16 font-mono tabular-nums text-emerald-400">{r.closedTrades ? formatUsd(r.harvested) : '—'}</span>
                           <div className="h-1.5 w-20 overflow-hidden rounded-full bg-zinc-800">
                             <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${share}%` }} />
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-2.5 text-right font-mono tabular-nums text-red-400">{formatUsd(r.leaked)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono tabular-nums text-red-400">{r.closedTrades ? formatUsd(r.leaked) : '—'}</td>
                       <td className="px-4 py-2.5 text-right font-mono tabular-nums text-zinc-300">
                         {r.closedTrades > 0 ? `${r.winRate.toFixed(1)}%` : '--'}
                         <span className="ml-1 text-[10px] text-zinc-600">({r.wins}W/{r.losses}L)</span>

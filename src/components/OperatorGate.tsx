@@ -2,6 +2,7 @@ import { useState, type FormEvent, type ReactNode } from 'react';
 import { Lock, ShieldCheck, Loader2 } from 'lucide-react';
 import type { OperatorStatus } from '@/lib/useOperatorSession';
 import { signInWithEmail, signUpWithEmail, signOutOperator } from '@/lib/operatorAuth';
+import { hasDatabaseAccess } from '@/lib/supabase';
 
 interface Props {
   status: OperatorStatus;
@@ -77,7 +78,7 @@ function OperatorLoginCard({ signedIn }: { signedIn: boolean }) {
         </div>
       </div>
 
-      {signedIn ? (
+      {!hasDatabaseAccess ? <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">Sign-in is not configured for this deployment. Contact the app owner to enable account access.</p> : signedIn ? (
         <div className="space-y-4">
           <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
             You are signed in, but this account does not have operator access.

@@ -183,9 +183,13 @@ export interface PaperTrade {
 }
 
 export interface OpenPosition extends PaperTrade {
-  current_price: number;
-  unrealized_pnl: number;
-  pnl_pct: number;
+  current_price: number | null;
+  unrealized_pnl: number | null;
+  pnl_pct: number | null;
+  runner_pnl?: number | null;
+  partial_pnl?: number;
+  price_available?: boolean;
+  execution_error?: string | null;
   is_live?: boolean;
   binance_order_id?: string | null;
 }
@@ -206,4 +210,4 @@ export interface StrategyConfig {
   updated_at: string;
 }
 
-export type TabId = 'command' | 'dashboard' | 'performance' | 'table' | 'operations' | 'live' | 'nft' | 'swarm' | 'swarm-wallet' | 'revenue' | 'withdrawal' | 'sprint' | 'roadmap' | 'execution' | 'signals-pro';
+export type TabId = 'overview' | 'command' | 'dashboard' | 'performance' | 'table' | 'operations' | 'live' | 'nft' | 'swarm' | 'swarm-wallet' | 'revenue' | 'withdrawal' | 'sprint' | 'roadmap' | 'execution' | 'signals-pro';

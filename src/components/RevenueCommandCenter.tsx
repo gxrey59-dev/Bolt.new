@@ -1,341 +1,70 @@
 import { useState, useCallback } from 'react';
-import {
-  DollarSign, TrendingUp, Target, Rocket, AlertCircle,
-  ArrowRight, Zap, Crown, Building2, Coins, Code, Users,
-  RefreshCw, ChevronRight, Flame,
-} from 'lucide-react';
+import { ArrowUpRight, Crown, RefreshCw, Target, ShieldCheck, CircleAlert } from 'lucide-react';
 import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
+import { loadRevenueTrades } from '@/lib/revenueData';
+import { formatRevenue, summarizeRevenue, type RevenueTrade } from '@/lib/revenueAccounting';
 
 interface RevenueStream {
-  id: string;
-  name: string;
-  category: string;
-  current_revenue: number;
-  target_revenue: number;
-  current_metric: string;
-  current_value: number;
-  target_value: number;
-  unit: string;
-  growth_rate: number;
-  months_to_target: number;
-  billion_share: number;
-  status: string;
-  blockers: string;
-  next_milestone: string;
-}
-
-const CATEGORY_ICONS: Record<string, typeof DollarSign> = {
-  trading: TrendingUp,
-  defi: Coins,
-  nft: Flame,
-  saas: Code,
-  licensing: Building2,
-  data: Users,
-};
-
-const CATEGORY_COLORS: Record<string, string> = {
-  trading: '#10b981',
-  defi: '#06b6d4',
-  nft: '#f59e0b',
-  saas: '#8b5cf6',
-  licensing: '#3b82f6',
-  data: '#ec4899',
-};
-
-const STATUS_STYLES: Record<string, { text: string; bg: string; dot: string; label: string }> = {
-  live: { text: 'text-emerald-400', bg: 'bg-emerald-500/10', dot: 'bg-emerald-500', label: 'LIVE' },
-  scaling: { text: 'text-cyan-400', bg: 'bg-cyan-500/10', dot: 'bg-cyan-500', label: 'SCALING' },
-  planned: { text: 'text-amber-400', bg: 'bg-amber-500/10', dot: 'bg-amber-500', label: 'PLANNED' },
-  conceptual: { text: 'text-zinc-500', bg: 'bg-zinc-700/30', dot: 'bg-zinc-600', label: 'CONCEPT' },
-};
-
-const BILLION = 1000000000;
-
-function formatMoney(n: number): string {
-  if (n >= BILLION) return `$${(n / BILLION).toFixed(2)}B`;
-  if (n >= 1000000) return `$${(n / 1000000).toFixed(1)}M`;
-  if (n >= 1000) return `$${(n / 1000).toFixed(1)}K`;
-  return `$${n.toFixed(2)}`;
-}
-
-function formatNum(n: number): string {
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-  return n.toFixed(0);
+  id: string; name: string; category: string; target_revenue: number;
+  status: string; blockers: string; next_milestone: string;
 }
 
 export default function RevenueCommandCenter() {
   const [streams, setStreams] = useState<RevenueStream[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [trades, setTrades] = useState<RevenueTrade[]>([]);
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
+  const [loading, setLoading] = useState(hasDatabaseAccess);
   const [error, setError] = useState('');
-
   const fetchData = useCallback(async () => {
-    if (!hasDatabaseAccess) {
-      setLoading(false);
-      return;
-    }
     try {
-      const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-      const [streamRes, tradeRes] = await Promise.all([
-        supabase.from('revenue_streams').select('*').order('target_revenue', { ascending: false }),
-        supabase.from('paper_trades').select('pnl, closed_at').eq('is_live', true).eq('status', 'closed').gte('closed_at', monthAgo),
+      const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
+      const [plans, records] = await Promise.all([
+        supabase.from('revenue_streams').select('id, name, category, target_revenue, status, blockers, next_milestone').order('target_revenue', { ascending: false }),
+        loadRevenueTrades(since),
       ]);
-      if (streamRes.error) throw new Error(streamRes.error.message);
-      if (tradeRes.error) throw new Error(tradeRes.error.message);
-
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      const trades = (tradeRes.data ?? []) as { pnl: number; closed_at: string }[];
-      const monthlyPnl = trades.reduce((s, t) => s + Number(t.pnl), 0);
-      const dailyPnl = trades
-        .filter(t => new Date(t.closed_at) >= todayStart)
-        .reduce((s, t) => s + Number(t.pnl), 0);
-
-      setStreams(((streamRes.data ?? []) as RevenueStream[]).map(s =>
-        s.category === 'trading' ? { ...s, current_revenue: monthlyPnl, current_value: dailyPnl } : s,
-      ));
+      if (plans.error) throw new Error(plans.error.message);
+      setStreams(plans.data ?? []);
+      setTrades(records);
+      setFetchedAt(new Date().toISOString());
       setError('');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Revenue data is unavailable.');
-    } finally {
-      setLoading(false);
-    }
+      setError(cause instanceof Error ? cause.message : 'Revenue reporting is unavailable.');
+    } finally { setLoading(false); }
   }, []);
-
-  useVisibilityPolling(fetchData, 10_000, hasDatabaseAccess);
-
-  const totalCurrentMonthly = streams.reduce((s, r) => s + Number(r.current_revenue), 0);
-  const totalTargetMonthly = streams.reduce((s, r) => s + Number(r.target_revenue), 0);
-  const totalTargetAnnual = totalTargetMonthly * 12;
-  const billionProgress = totalTargetAnnual > 0 ? (totalCurrentMonthly * 12 / BILLION) * 100 : 0;
-  const liveStreams = streams.filter(s => s.status === 'live' || s.status === 'scaling').length;
-  const conceptStreams = streams.filter(s => s.status === 'conceptual' || s.status === 'planned').length;
-
-  // Compound growth projection: if current monthly revenue grows at weighted avg rate, when do we hit $1B/yr?
-  const weightedGrowth = streams.length > 0
-    ? streams.reduce((s, r) => s + Number(r.growth_rate) * Number(r.target_revenue), 0) / totalTargetMonthly
-    : 0;
-  const monthsToBillion = totalCurrentMonthly > 0 && weightedGrowth > 1
-    ? Math.log(BILLION / (totalCurrentMonthly * 12)) / Math.log(weightedGrowth)
-    : 0;
+  useVisibilityPolling(fetchData, 60_000, hasDatabaseAccess);
+  const summary = summarizeRevenue(trades, Date.now() - 30 * 86_400_000);
+  const available = !!fetchedAt && !error;
 
   return (
     <section className="space-y-5">
-      {/* Hero — Billion Dollar Target */}
       <div className="relative overflow-hidden rounded-2xl border border-amber-500/20 bg-gradient-to-br from-zinc-900 via-zinc-950 to-black p-6">
-        <div className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-amber-500/10 blur-3xl" />
-        <div className="absolute -left-10 -bottom-10 h-48 w-48 rounded-full bg-emerald-500/10 blur-3xl" />
+        <div aria-hidden className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-amber-500/10 blur-3xl" />
         <div className="relative">
-          <div className="flex items-center gap-2 mb-3">
-            <Crown className="h-6 w-6 text-amber-400" />
-            <h2 className="text-xl font-bold text-zinc-100">Revenue Command Center</h2>
-            <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">$1B TARGET</span>
+          <div className="mb-2 flex items-center gap-3"><Crown className="h-6 w-6 text-amber-400" /><h2 className="text-xl font-bold text-zinc-100">Revenue Command Center</h2></div>
+          <p className="max-w-2xl text-sm leading-relaxed text-zinc-400">Track reconciled trading results, then plan the next revenue milestone. Sales, transfers, and trading returns have separate accounting.</p>
+          <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><p className="mb-2 flex items-center gap-2 text-xs text-zinc-400"><ShieldCheck className="h-4 w-4 text-emerald-400" />Verified trading P&amp;L · 30d</p><p className="font-mono text-2xl font-semibold text-zinc-100">{formatRevenue(available && summary.verified.length ? summary.verifiedPnl : null)}</p><p className="mt-1 text-xs text-zinc-500">{available ? `${summary.verified.length} verified closed trades` : 'Awaiting verified history'}</p></div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4"><p className="mb-2 flex items-center gap-2 text-xs text-zinc-400"><CircleAlert className="h-4 w-4 text-amber-400" />Awaiting reconciliation</p><p className="font-mono text-2xl font-semibold text-amber-300">{available ? summary.pending.length : '—'}</p><p className="mt-1 text-xs text-zinc-500">Excluded from verified returns</p></div>
+            <a href="#execution" className="flex flex-col justify-between rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4 transition-colors hover:bg-cyan-500/10"><span className="flex items-center justify-between text-sm font-semibold text-cyan-300">Review exchange execution<ArrowUpRight className="h-4 w-4" /></span><span className="mt-3 text-xs leading-relaxed text-zinc-400">Check holdings, fills, and any unmatched trade records.</span></a>
           </div>
-
-          {/* Progress bar to a billion */}
-          <div className="mb-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-zinc-500">Annual Revenue Run Rate</span>
-              <span className="font-mono text-sm font-bold text-zinc-300">
-                {formatMoney(totalCurrentMonthly * 12)} <span className="text-zinc-600">/ {formatMoney(BILLION)}</span>
-              </span>
-            </div>
-            <div className="relative h-3 w-full rounded-full bg-zinc-800 overflow-hidden">
-              <div
-                className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-emerald-500 via-amber-500 to-amber-400 transition-all"
-                style={{ width: `${Math.max(billionProgress, 0.5)}%` }}
-              />
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-[9px] font-bold text-white mix-blend-difference">
-                  {billionProgress.toFixed(4)}% TO $1B
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Key metrics */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded-xl bg-zinc-950/60 p-3">
-              <div className="flex items-center gap-1.5 mb-1">
-                <DollarSign className="h-3 w-3 text-emerald-400" />
-                <p className="text-[9px] uppercase tracking-wider text-zinc-600">Monthly Now</p>
-              </div>
-              <p className="font-mono text-lg font-bold tabular-nums text-emerald-400">{formatMoney(totalCurrentMonthly)}</p>
-            </div>
-            <div className="rounded-xl bg-zinc-950/60 p-3">
-              <div className="flex items-center gap-1.5 mb-1">
-                <Target className="h-3 w-3 text-amber-400" />
-                <p className="text-[9px] uppercase tracking-wider text-zinc-600">Monthly Target</p>
-              </div>
-              <p className="font-mono text-lg font-bold tabular-nums text-amber-400">{formatMoney(totalTargetMonthly)}</p>
-            </div>
-            <div className="rounded-xl bg-zinc-950/60 p-3">
-              <div className="flex items-center gap-1.5 mb-1">
-                <Rocket className="h-3 w-3 text-cyan-400" />
-                <p className="text-[9px] uppercase tracking-wider text-zinc-600">Revenue Streams</p>
-              </div>
-              <p className="font-mono text-lg font-bold tabular-nums text-zinc-100">
-                {liveStreams}<span className="text-zinc-600 text-xs"> live</span> / {conceptStreams}<span className="text-zinc-600 text-xs"> concept</span>
-              </p>
-            </div>
-            <div className="rounded-xl bg-zinc-950/60 p-3">
-              <div className="flex items-center gap-1.5 mb-1">
-                <Zap className="h-3 w-3 text-purple-400" />
-                <p className="text-[9px] uppercase tracking-wider text-zinc-600">Est. Time to $1B</p>
-              </div>
-              <p className="font-mono text-lg font-bold tabular-nums text-zinc-100">
-                {monthsToBillion > 0 && monthsToBillion < 600 ? `${monthsToBillion.toFixed(0)} mo` : 'TBD'}
-              </p>
-            </div>
-          </div>
+          <p className="mt-4 text-xs text-zinc-500">{fetchedAt ? `Database checked ${new Date(fetchedAt).toLocaleString()} · rolling 30-day window` : 'Source: live trade ledger with explicit accounting verification'}</p>
         </div>
       </div>
-
-      {/* Reality Check Banner */}
-      <div className="flex items-start gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
-        <AlertCircle className="h-5 w-5 text-amber-400 flex-shrink-0 mt-0.5" />
-        <div>
-          <p className="text-xs font-semibold text-amber-300 mb-1">Reality Check</p>
-          <p className="text-[11px] leading-relaxed text-zinc-400">
-            You're currently generating {formatMoney(totalCurrentMonthly)}/month across {liveStreams} live streams.
-            To reach $1B/year you need {formatMoney(BILLION / 12)}/month — that's a{' '}
-            <span className="font-bold text-amber-400">{((BILLION / 12) / Math.max(totalCurrentMonthly, 0.01)).toFixed(0)}x</span> scale-up.
-            The plan below maps each revenue stream, what's blocking it, and the next milestone to unlock growth.
-          </p>
-        </div>
-      </div>
-
-      {error ? (
-        <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-          {error}
-        </div>
-      ) : null}
-
-      {/* Revenue Stream Cards */}
-      {loading ? (
-        <div className="flex h-64 items-center justify-center">
-          <RefreshCw className="h-6 w-6 animate-spin text-zinc-600" />
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          {streams.map(stream => {
-            const CatIcon = CATEGORY_ICONS[stream.category] ?? DollarSign;
-            const color = CATEGORY_COLORS[stream.category] ?? '#a1a1aa';
-            const status = STATUS_STYLES[stream.status] ?? STATUS_STYLES.conceptual;
-            const progress = stream.target_revenue > 0 ? (Number(stream.current_revenue) / Number(stream.target_revenue)) * 100 : 0;
-            const metricProgress = stream.target_value > 0 ? (Number(stream.current_value) / Number(stream.target_value)) * 100 : 0;
-            const isSelected = selected === stream.id;
-
-            return (
-              <div
-                key={stream.id}
-                className={`rounded-2xl border bg-gradient-to-br from-zinc-900/90 to-zinc-950/90 p-4 transition-all ${
-                  isSelected ? 'border-amber-500/40' : 'border-zinc-800'
-                }`}
-              >
-                {/* Header */}
-                <div className="flex items-start gap-3 mb-3">
-                  <div className="rounded-xl p-2 flex-shrink-0" style={{ backgroundColor: `${color}15` }}>
-                    <CatIcon className="h-4 w-4" style={{ color }} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-bold text-zinc-100 truncate">{stream.name}</h3>
-                      <span className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[8px] font-bold ${status.text} ${status.bg}`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${status.dot}`} />
-                        {status.label}
-                      </span>
-                    </div>
-                    <p className="text-[10px] text-zinc-600 capitalize mt-0.5">{stream.category}</p>
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <p className="text-[9px] text-zinc-600">% of $1B</p>
-                    <p className="font-mono text-sm font-bold" style={{ color }}>{stream.billion_share}%</p>
-                  </div>
-                </div>
-
-                {/* Revenue progress */}
-                <div className="mb-3">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] text-zinc-600">Monthly Revenue</span>
-                    <span className="font-mono text-[11px] text-zinc-400">
-                      {formatMoney(Number(stream.current_revenue))} <span className="text-zinc-700">/ {formatMoney(Number(stream.target_revenue))}</span>
-                    </span>
-                  </div>
-                  <div className="h-2 w-full rounded-full bg-zinc-800">
-                    <div
-                      className="h-2 rounded-full transition-all"
-                      style={{ width: `${Math.max(progress, 0.5)}%`, backgroundColor: color }}
-                    />
-                  </div>
-                </div>
-
-                {/* Key metric progress */}
-                <div className="mb-3">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] text-zinc-600">{stream.current_metric}</span>
-                    <span className="font-mono text-[11px] text-zinc-400">
-                      {formatNum(Number(stream.current_value))} <span className="text-zinc-700">/ {formatNum(Number(stream.target_value))} {stream.unit}</span>
-                    </span>
-                  </div>
-                  <div className="h-1.5 w-full rounded-full bg-zinc-800">
-                    <div
-                      className="h-1.5 rounded-full transition-all opacity-60"
-                      style={{ width: `${Math.max(metricProgress, 0.5)}%`, backgroundColor: color }}
-                    />
-                  </div>
-                </div>
-
-                {/* Growth + timeline */}
-                <div className="flex items-center gap-3 mb-3 text-[10px]">
-                  <span className="flex items-center gap-1 text-zinc-500">
-                    <TrendingUp className="h-3 w-3" />
-                    {Number(stream.growth_rate).toFixed(1)}x/mo growth
-                  </span>
-                  <span className="flex items-center gap-1 text-zinc-500">
-                    <Target className="h-3 w-3" />
-                    {stream.months_to_target} mo to target
-                  </span>
-                </div>
-
-                {/* Expandable details */}
-                <button
-                  onClick={() => setSelected(isSelected ? null : stream.id)}
-                  className="flex w-full items-center justify-between rounded-lg bg-zinc-950/40 p-2 text-[10px] text-zinc-500 hover:bg-zinc-900/60 transition-colors"
-                >
-                  <span>{isSelected ? 'Hide details' : 'Show blockers & milestones'}</span>
-                  <ChevronRight className={`h-3 w-3 transition-transform ${isSelected ? 'rotate-90' : ''}`} />
-                </button>
-
-                {isSelected && (
-                  <div className="mt-2 space-y-2 animate-fade-in">
-                    {/* Blockers */}
-                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-2.5">
-                      <p className="flex items-center gap-1.5 text-[10px] font-bold text-red-400 mb-1">
-                        <AlertCircle className="h-3 w-3" />
-                        What's Blocking Growth
-                      </p>
-                      <p className="text-[10px] leading-relaxed text-zinc-400">{stream.blockers}</p>
-                    </div>
-
-                    {/* Next milestone */}
-                    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2.5">
-                      <p className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400 mb-1">
-                        <ArrowRight className="h-3 w-3" />
-                        Next Milestone
-                      </p>
-                      <p className="text-[10px] leading-relaxed text-zinc-400">{stream.next_milestone}</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+      {!hasDatabaseAccess && <p role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-300">Connect the app to its database to load revenue records.</p>}
+      {error && <p role="alert" className="rounded-xl border border-red-500/30 bg-red-500/5 p-4 text-sm text-red-300">{error} Revenue totals are unavailable until the next successful refresh.</p>}
+      <div className="flex items-center gap-2"><Target className="h-4 w-4 text-amber-400" /><h3 className="font-semibold text-zinc-200">Revenue plans</h3><span className="ml-auto text-xs text-zinc-500">Targets require validation</span></div>
+      <p className="text-xs leading-relaxed text-zinc-500">Saved targets and milestones are planning inputs. They do not establish current revenue, growth, or a completion date.</p>
+      {loading ? <div className="flex justify-center p-12"><RefreshCw className="h-5 w-5 animate-spin text-zinc-500" /></div> : !error && hasDatabaseAccess && streams.length === 0 ? <p className="rounded-xl border border-zinc-800 p-6 text-sm text-zinc-500">No revenue plans have been recorded.</p> : (
+        <div className="grid gap-4 lg:grid-cols-2">{streams.map(stream => (
+          <article key={stream.id} className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+            <p className="text-[10px] uppercase tracking-widest text-amber-400">{stream.category} · planning</p>
+            <h4 className="mt-2 text-base font-semibold text-zinc-100">{stream.name}</h4>
+            <div className="my-4 flex items-baseline justify-between gap-4"><span className="text-xs text-zinc-500">Saved monthly target</span><span className="font-mono text-lg text-zinc-200">{formatRevenue(Number(stream.target_revenue))}</span></div>
+            <div className="space-y-3 border-t border-zinc-800 pt-4 text-xs leading-relaxed"><div><p className="font-semibold text-zinc-300">Next milestone</p><p className="mt-1 text-zinc-400">{stream.next_milestone || 'Define a measurable next milestone.'}</p></div><div><p className="font-semibold text-zinc-300">Dependencies</p><p className="mt-1 text-zinc-500">{stream.blockers || 'Review launch requirements before activation.'}</p></div></div>
+          </article>
+        ))}</div>
       )}
-
     </section>
   );
 }

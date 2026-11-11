@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import {
   TrendingUp, TrendingDown, Activity, DollarSign, Zap, Target,
   Shield, Clock, BarChart3, Percent, ArrowUpRight, ArrowDownRight,
@@ -8,8 +8,9 @@ import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import { FACTIONS, TRADING_PAIRS } from '@/lib/constants';
 import { operatorFetch } from '@/lib/operatorAuth';
-import { fetchOpenPositions, closeAllPositions, runStrategyScan } from '@/lib/engine';
+import { fetchOpenPositions, closeAllPositions, runStrategyScan, fetchLivePrices } from '@/lib/engine';
 import type { OpenPosition, PaperTrade } from '@/lib/types';
+import { describeClosePositions, positionUnrealizedPnl, totalPositionPnl, recordedTradeStats, readTradingResponse } from '@/lib/tradingStatus';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -40,40 +41,25 @@ interface PriceTick {
   change: number;
 }
 
-async function fetchConfig(): Promise<TradingConfig | null> {
-  try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-feed/config`, {
-      headers: { Authorization: `Bearer ${ANON_KEY}`, apikey: ANON_KEY },
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch { return null; }
+async function fetchConfig(): Promise<TradingConfig> {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-feed/config`, {
+    headers: { Authorization: `Bearer ${ANON_KEY}`, apikey: ANON_KEY },
+    signal: AbortSignal.timeout(15000),
+  });
+  const data = await readTradingResponse(res);
+  if (typeof data.paperMode !== 'boolean' || typeof data.killSwitch !== 'boolean') {
+    throw new Error('Trading configuration is unavailable.');
+  }
+  return data as unknown as TradingConfig;
 }
 
-async function fetchLivePrices(): Promise<PriceTick[]> {
-  try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-feed/prices`, {
-      headers: { Authorization: `Bearer ${ANON_KEY}`, apikey: ANON_KEY },
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.tickers ?? []).map((t: { symbol: string; price: number; priceChangePercent: number }) => ({
-      symbol: t.symbol,
-      price: t.price,
-      change: t.priceChangePercent,
-    }));
-  } catch { return []; }
-}
-
-async function toggleKillSwitch(action: 'trip' | 'reset'): Promise<boolean> {
-  try {
-    const res = await operatorFetch('binance-feed/kill-switch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    });
-    return res.ok;
-  } catch { return false; }
+async function toggleKillSwitch(action: 'trip' | 'reset'): Promise<void> {
+  const res = await operatorFetch('binance-feed/kill-switch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
+  await readTradingResponse(res);
 }
 
 const strategyColors: Record<string, string> = {
@@ -97,67 +83,64 @@ export default function LiveTradingDashboard() {
   const [confirmClose, setConfirmClose] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
   const [togglingKill, setTogglingKill] = useState(false);
-  const [, setLastScan] = useState<Date | null>(null);
+  const [actionMessage, setActionMessage] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [positionsError, setPositionsError] = useState('');
+  const [historyError, setHistoryError] = useState('');
+  const [marketError, setMarketError] = useState('');
+  const [configError, setConfigError] = useState('');
+  const [positionsLoaded, setPositionsLoaded] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [factionFilter, setFactionFilter] = useState<string>('all');
-  const equityRef = useRef<EquityPoint[]>([]);
-
   const fetchData = useCallback(async () => {
-    const [pos, hist, cfg, pr] = await Promise.all([
+    const [pos, hist, cfg, pr] = await Promise.allSettled([
       fetchOpenPositions(),
-      hasDatabaseAccess
-        ? supabase.from('paper_trades').select('*').eq('is_live', true).eq('status', 'closed').order('closed_at', { ascending: false }).limit(100)
-        : Promise.resolve({ data: [] as PaperTrade[] }),
+      (async () => {
+        if (!hasDatabaseAccess) throw new Error('Sign-in configuration is required to read trade history.');
+        const result = await supabase.from('paper_trades').select('*').eq('is_live', true).eq('status', 'closed').order('closed_at', { ascending: false }).limit(100);
+        if (result.error) throw new Error(result.error.message);
+        return (result.data ?? []) as PaperTrade[];
+      })(),
       fetchConfig(),
       fetchLivePrices(),
     ]);
-    setPositions(pos);
-    setHistory(hist.data ?? []);
-    setConfig(cfg);
-    setPrices(pr);
-
-    // Build equity curve from closed trades
-    const closed = (hist.data ?? []) as PaperTrade[];
-    const sortedClosed = [...closed].sort((a, b) =>
-      new Date(a.closed_at ?? a.opened_at).getTime() - new Date(b.closed_at ?? b.opened_at).getTime()
-    );
-    const startingCapital = cfg?.liveCapital ?? 43;
-    let runningCapital = startingCapital;
-    const points: EquityPoint[] = [{ time: 'start', capital: startingCapital, pnl: 0 }];
-    for (const t of sortedClosed) {
-      runningCapital += Number(t.pnl);
-      points.push({
-        time: t.closed_at ?? t.opened_at,
-        capital: runningCapital,
-        pnl: Number(t.pnl),
-      });
-    }
-    // Add current open position unrealized P&L
-    const unrealized = pos.reduce((s, p) => s + p.unrealized_pnl, 0);
-    points.push({
-      time: 'now',
-      capital: runningCapital + unrealized,
-      pnl: unrealized,
-    });
-    equityRef.current = points;
-    setEquityCurve(points);
+    const reason = (cause: unknown) => cause instanceof Error ? cause.message : 'Connection unavailable.';
+    if (pos.status === 'fulfilled') {
+      setPositions(pos.value); setPositionsLoaded(true); setPositionsError('');
+      setRefreshedAt(new Date().toISOString());
+    } else setPositionsError(reason(pos.reason));
+    if (hist.status === 'fulfilled') {
+      setHistory(hist.value); setHistoryLoaded(true); setHistoryError('');
+      // This is recorded trade P&L for the fetched window, not account equity.
+      let cumulativePnl = 0;
+      const points: EquityPoint[] = [{ time: 'start', capital: 0, pnl: 0 }];
+      for (const trade of [...hist.value].reverse()) {
+        cumulativePnl += Number(trade.pnl);
+        points.push({ time: trade.closed_at ?? trade.opened_at, capital: cumulativePnl, pnl: Number(trade.pnl) });
+      }
+      setEquityCurve(points);
+    } else setHistoryError(reason(hist.reason));
+    if (cfg.status === 'fulfilled') { setConfig(cfg.value); setConfigError(''); }
+    else { setConfig(null); setConfigError(reason(cfg.reason)); }
+    if (pr.status === 'fulfilled') { setPrices(pr.value); setMarketError(''); }
+    else { setPrices([]); setMarketError(reason(pr.reason)); }
   }, []);
 
-  useVisibilityPolling(fetchData, 4_000);
+  useVisibilityPolling(fetchData, 10_000);
 
+  const positionsAvailable = positionsLoaded && !positionsError;
+  const historyAvailable = historyLoaded && !historyError;
+  const dataErrors = [positionsError, historyError, configError, marketError].filter(Boolean);
   const isLive = config?.paperMode === false;
   const killActive = config?.killSwitch === true;
-  const totalUnrealized = positions.reduce((s, p) => s + p.unrealized_pnl, 0);
-  const totalRealized = history.reduce((s, t) => s + Number(t.pnl), 0);
-  const wins = history.filter(t => Number(t.pnl) >= 0).length;
-  const losses = history.filter(t => Number(t.pnl) < 0).length;
-  const winRate = history.length > 0 ? (wins / history.length) * 100 : 0;
-  const avgWin = wins > 0 ? history.filter(t => Number(t.pnl) >= 0).reduce((s, t) => s + Number(t.pnl), 0) / wins : 0;
-  const avgLoss = losses > 0 ? history.filter(t => Number(t.pnl) < 0).reduce((s, t) => s + Number(t.pnl), 0) / losses : 0;
-  const profitFactor = avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : avgWin > 0 ? 99 : 0;
+  const totalUnrealized = positionsAvailable ? totalPositionPnl(positions) : null;
+  const recorded = recordedTradeStats(history);
+  const totalRealized = recorded.total;
+  const { wins, losses, winRate, avgWin, avgLoss, profitFactor } = recorded;
   const dailyLossPct = config && config.liveCapital > 0
-    ? (config.dailyLossAccumulator / config.liveCapital) * 100 : 0;
-  const currentCapital = (config?.liveCapital ?? 0) + totalUnrealized;
-  const totalReturn = config?.liveCapital ? ((totalRealized + totalUnrealized) / config.liveCapital) * 100 : 0;
+    ? (config.dailyLossAccumulator / config.liveCapital) * 100 : null;
+  const currentCapital = config?.liveCapital ?? null;
 
   // Sparkline path for equity curve
   const sparkPath = (() => {
@@ -178,38 +161,42 @@ export default function LiveTradingDashboard() {
   const equityUp = equityCurve.length >= 2 && equityCurve[equityCurve.length - 1].capital >= equityCurve[0].capital;
 
   async function handleCloseAll() {
-    setClosing(true);
-    setConfirmClose(false);
-    await closeAllPositions();
-    await fetchData();
-    setClosing(false);
+    setClosing(true); setConfirmClose(false); setActionError(''); setActionMessage('');
+    try {
+      const result = await closeAllPositions();
+      const message = describeClosePositions(result);
+      if (result.complete) setActionMessage(message); else setActionError(message);
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : 'Close status could not be confirmed. Verify exchange orders before retrying.');
+    } finally {
+      await fetchData(); setClosing(false);
+    }
   }
 
   async function handleScan() {
-    setScanning(true);
-    await runStrategyScan();
-    setLastScan(new Date());
-    await fetchData();
-    setScanning(false);
+    setScanning(true); setActionError(''); setActionMessage('');
+    try {
+      const result = await runStrategyScan();
+      setActionMessage(`Scan complete: ${result.signals} signals, ${result.tradesOpened} opened, ${result.tradesClosed} closed.`);
+    } catch (cause) { setActionError(cause instanceof Error ? cause.message : 'Scan status is unavailable.'); }
+    finally { await fetchData(); setScanning(false); }
   }
 
-  async function handleKillSwitch() {
-    setTogglingKill(true);
-    setConfirmKill(false);
-    await toggleKillSwitch('trip');
-    await fetchData();
-    setTogglingKill(false);
+  async function changeKillSwitch(action: 'trip' | 'reset') {
+    setTogglingKill(true); setConfirmKill(false); setActionError(''); setActionMessage('');
+    try {
+      await toggleKillSwitch(action);
+      setActionMessage(action === 'trip' ? 'Kill switch activated. Review any remaining positions before considering them closed.' : 'Kill switch reset. Automated trading may resume.');
+    } catch (cause) { setActionError(cause instanceof Error ? cause.message : 'Kill switch status could not be confirmed.'); }
+    finally { await fetchData(); setTogglingKill(false); }
   }
 
-  async function handleResetKill() {
-    setTogglingKill(true);
-    await toggleKillSwitch('reset');
-    await fetchData();
-    setTogglingKill(false);
-  }
+  const handleKillSwitch = () => changeKillSwitch('trip');
+  const handleResetKill = () => {
+    if (window.confirm('Reset the kill switch and allow automated trading to resume?')) void changeKillSwitch('reset');
+  };
 
-  // Sort positions by P&L
-  const sortedPositions = [...positions].sort((a, b) => b.unrealized_pnl - a.unrealized_pnl);
+  const sortedPositions = [...positions].sort((a, b) => (positionUnrealizedPnl(b) ?? -Infinity) - (positionUnrealizedPnl(a) ?? -Infinity));
   const visiblePositions = factionFilter === 'all' ? sortedPositions : sortedPositions.filter(p => p.faction_id === factionFilter);
   const visibleHistory = factionFilter === 'all' ? history : history.filter(t => t.faction_id === factionFilter);
 
@@ -229,7 +216,7 @@ export default function LiveTradingDashboard() {
         </div>
         <span className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold ${isLive ? 'bg-red-500/15 text-red-400' : 'bg-cyan-500/15 text-cyan-400'}`}>
           <span className={`h-1.5 w-1.5 rounded-full ${isLive ? 'bg-red-500' : 'bg-cyan-500'} animate-pulse`} />
-          {isLive ? 'LIVE — REAL ORDERS' : 'PAPER MODE'}
+          {config ? isLive ? 'LIVE — REAL ORDERS' : 'PAPER MODE' : 'MODE UNAVAILABLE'}
         </span>
         {killActive && (
           <span className="flex items-center gap-1.5 rounded-full bg-red-500/20 px-3 py-1 text-[11px] font-bold text-red-400">
@@ -238,12 +225,12 @@ export default function LiveTradingDashboard() {
           </span>
         )}
         <span className="text-[11px] text-zinc-600">
-          Auto-scan: every 5 min (pg_cron)
+          {refreshedAt ? `Positions checked ${new Date(refreshedAt).toLocaleTimeString()}` : 'Checking positions…'}
         </span>
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={handleScan}
-            disabled={scanning}
+            disabled={scanning || closing || togglingKill || !config || killActive}
             title="One click: scans every pair and opens qualifying trades"
             className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-amber-400 px-4 py-2 text-xs font-bold text-black shadow-lg shadow-amber-500/25 transition-all hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
           >
@@ -255,7 +242,7 @@ export default function LiveTradingDashboard() {
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={handleCloseAll}
-                  disabled={closing}
+                  disabled={closing || scanning || togglingKill}
                   className="flex items-center gap-1 rounded-lg bg-red-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-red-500 disabled:opacity-50"
                 >
                   {closing ? 'Closing…' : 'Confirm Close All'}
@@ -266,6 +253,7 @@ export default function LiveTradingDashboard() {
               </div>
             ) : (
               <button
+                disabled={closing || scanning || togglingKill}
                 onClick={() => setConfirmClose(true)}
                 className="flex items-center gap-1 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] font-bold text-red-400 hover:bg-red-500/20"
               >
@@ -275,6 +263,11 @@ export default function LiveTradingDashboard() {
           )}
         </div>
       </div>
+
+      {dataErrors.length > 0 && <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-300">Data unavailable or stale: {dataErrors.join(' ')} Previous rows may remain visible.</div>}
+      {actionError && <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">{actionError}</div>}
+      {actionMessage && <div role="status" className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4 text-sm text-cyan-300">{actionMessage}</div>}
+      {positionsAvailable && totalUnrealized === null && <p role="status" className="text-sm text-amber-300">Some position quotes are unavailable. Open P&amp;L is withheld until prices recover.</p>}
 
       {/* Kill Switch Banner */}
       {killActive && (
@@ -302,11 +295,9 @@ export default function LiveTradingDashboard() {
           <div className="flex items-center gap-3">
             <AlertTriangle className="h-5 w-5 flex-shrink-0 text-amber-400" />
             <div className="flex-1">
-              <p className="text-sm font-bold text-amber-400">TRADING PAUSED — WALLET BELOW EXCHANGE MINIMUM</p>
+              <p className="text-sm font-bold text-amber-400">TRACKED CAPITAL IS LOW</p>
               <p className="text-[11px] text-amber-400/80">
-                Usable capital {config.liveCapital.toFixed(2)} USDT is under Binance's $5.50 minimum order
-                size, so every signal is rejected before reaching the exchange. Deposit USDT to the trading wallet
-                and trading resumes automatically.
+                The app records {config.liveCapital.toFixed(2)} USDT of trading capital. Confirm the current exchange balance and each pair’s order minimum in Live Execution before adding funds or trading.
               </p>
             </div>
             <DollarSign className="h-4 w-4 flex-shrink-0 text-amber-400/60" />
@@ -320,14 +311,12 @@ export default function LiveTradingDashboard() {
         <div className="rounded-xl border border-zinc-800 bg-gradient-to-br from-zinc-900/80 to-zinc-950/80 p-4">
           <div className="flex items-center gap-1.5 mb-1.5">
             <DollarSign className="h-3.5 w-3.5 text-emerald-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Equity</p>
+            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Tracked capital</p>
           </div>
           <p className="font-mono text-xl font-bold tabular-nums text-zinc-100">
-            ${currentCapital.toFixed(2)}
+            {currentCapital === null ? '—' : `$${currentCapital.toFixed(2)}`}
           </p>
-          <p className={`font-mono text-[10px] tabular-nums ${totalReturn >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-            {totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(2)}% all-time
-          </p>
+          <p className="text-[10px] text-zinc-500">App record; verify exchange balance</p>
         </div>
 
         {/* Unrealized P&L */}
@@ -336,22 +325,22 @@ export default function LiveTradingDashboard() {
             <Activity className="h-3.5 w-3.5 text-cyan-400" />
             <p className="text-[10px] uppercase tracking-wider text-zinc-600">Unrealized</p>
           </div>
-          <p className={`font-mono text-xl font-bold tabular-nums ${totalUnrealized >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-            {totalUnrealized >= 0 ? '+' : ''}${totalUnrealized.toFixed(4)}
+          <p className={`font-mono text-xl font-bold tabular-nums ${totalUnrealized === null ? 'text-zinc-500' : totalUnrealized >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {totalUnrealized === null ? '—' : `${totalUnrealized >= 0 ? '+' : ''}$${totalUnrealized.toFixed(4)}`}
           </p>
-          <p className="text-[10px] text-zinc-600">{positions.length} open position{positions.length !== 1 ? 's' : ''}</p>
+          <p className="text-[10px] text-zinc-600">{positionsAvailable ? `${positions.length} tracked open positions` : 'Position count unavailable'}</p>
         </div>
 
         {/* Realized P&L */}
         <div className="rounded-xl border border-zinc-800 bg-gradient-to-br from-zinc-900/80 to-zinc-950/80 p-4">
           <div className="flex items-center gap-1.5 mb-1.5">
             <BarChart3 className="h-3.5 w-3.5 text-amber-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Realized</p>
+            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Recorded P&amp;L</p>
           </div>
           <p className={`font-mono text-xl font-bold tabular-nums ${totalRealized >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-            {totalRealized >= 0 ? '+' : ''}${totalRealized.toFixed(4)}
+            {historyAvailable ? `${totalRealized >= 0 ? '+' : ''}$${totalRealized.toFixed(4)}` : '—'}
           </p>
-          <p className="text-[10px] text-zinc-600">{history.length} closed trade{history.length !== 1 ? 's' : ''}</p>
+          <p className="text-[10px] text-zinc-600">{historyAvailable ? `${history.length} latest records; unverified` : 'History unavailable'}</p>
         </div>
 
         {/* Win Rate */}
@@ -361,9 +350,9 @@ export default function LiveTradingDashboard() {
             <p className="text-[10px] uppercase tracking-wider text-zinc-600">Win Rate</p>
           </div>
           <p className="font-mono text-xl font-bold tabular-nums text-zinc-100">
-            {winRate.toFixed(1)}%
+            {historyAvailable && winRate !== null ? `${winRate.toFixed(1)}%` : '—'}
           </p>
-          <p className="text-[10px] text-zinc-600">{wins}W / {losses}L</p>
+          <p className="text-[10px] text-zinc-600">{historyAvailable ? `${wins}W / ${losses}L / ${recorded.breakeven} flat` : '—'}</p>
         </div>
 
         {/* Profit Factor */}
@@ -373,10 +362,10 @@ export default function LiveTradingDashboard() {
             <p className="text-[10px] uppercase tracking-wider text-zinc-600">Profit Factor</p>
           </div>
           <p className="font-mono text-xl font-bold tabular-nums text-zinc-100">
-            {profitFactor >= 99 ? '∞' : profitFactor.toFixed(2)}
+            {!historyAvailable || profitFactor === null ? '—' : profitFactor === Infinity ? '∞' : profitFactor.toFixed(2)}
           </p>
           <p className="text-[10px] text-zinc-600">
-            Avg win ${avgWin.toFixed(4)} / Avg loss ${avgLoss.toFixed(4)}
+            {historyAvailable ? `Avg win $${avgWin.toFixed(4)} / loss $${avgLoss.toFixed(4)}` : 'Awaiting history'}
           </p>
         </div>
 
@@ -386,13 +375,13 @@ export default function LiveTradingDashboard() {
             <Shield className="h-3.5 w-3.5 text-red-400" />
             <p className="text-[10px] uppercase tracking-wider text-zinc-600">Daily Loss</p>
           </div>
-          <p className={`font-mono text-xl font-bold tabular-nums ${dailyLossPct >= (config?.maxDailyLossPct ?? 8) * 0.8 ? 'text-red-400' : 'text-zinc-100'}`}>
-            {dailyLossPct.toFixed(1)}%
+          <p className={`font-mono text-xl font-bold tabular-nums ${(dailyLossPct ?? 0) >= (config?.maxDailyLossPct ?? 8) * 0.8 ? 'text-red-400' : 'text-zinc-100'}`}>
+            {dailyLossPct === null ? '—' : `${dailyLossPct.toFixed(1)}%`}
           </p>
           <div className="mt-1.5 h-1 w-full rounded-full bg-zinc-800">
             <div
-              className={`h-1 rounded-full transition-all ${dailyLossPct >= (config?.maxDailyLossPct ?? 8) * 0.8 ? 'bg-red-500' : 'bg-amber-500'}`}
-              style={{ width: `${Math.min(dailyLossPct / (config?.maxDailyLossPct ?? 8) * 100, 100)}%` }}
+              className={`h-1 rounded-full transition-all ${(dailyLossPct ?? 0) >= (config?.maxDailyLossPct ?? 8) * 0.8 ? 'bg-red-500' : 'bg-amber-500'}`}
+              style={{ width: `${Math.min((dailyLossPct ?? 0) / (config?.maxDailyLossPct ?? 8) * 100, 100)}%` }}
             />
           </div>
         </div>
@@ -405,13 +394,13 @@ export default function LiveTradingDashboard() {
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <TrendingUp className={`h-4 w-4 ${equityUp ? 'text-emerald-400' : 'text-red-400'}`} />
-              <h3 className="text-sm font-semibold text-zinc-300">Equity Curve</h3>
+              <h3 className="text-sm font-semibold text-zinc-300">Recorded trade P&amp;L · latest 100</h3>
             </div>
             <span className={`font-mono text-xs font-bold tabular-nums ${equityUp ? 'text-emerald-400' : 'text-red-400'}`}>
-              {equityUp ? '+' : ''}{(equityCurve.length >= 2 ? equityCurve[equityCurve.length - 1].capital - equityCurve[0].capital : 0).toFixed(4)}
+              {historyAvailable ? `${equityUp ? '+' : ''}${totalRealized.toFixed(4)}` : '—'}
             </span>
           </div>
-          {equityCurve.length >= 2 ? (
+          {historyAvailable && equityCurve.length >= 2 ? (
             <div className="relative h-40 w-full">
               <svg viewBox="0 0 100 30" preserveAspectRatio="none" className="h-full w-full">
                 <defs>
@@ -432,7 +421,7 @@ export default function LiveTradingDashboard() {
             </div>
           ) : (
             <div className="flex h-40 items-center justify-center text-xs text-zinc-600">
-              Equity curve builds as trades close
+              {historyError || (historyLoaded ? 'No closed trades recorded.' : 'Loading trade records…')}
             </div>
           )}
         </div>
@@ -454,7 +443,7 @@ export default function LiveTradingDashboard() {
                 </span>
               </div>
             )) : (
-              <p className="text-center text-xs text-zinc-600 py-4">Loading market data…</p>
+              <p className="text-center text-xs text-zinc-600 py-4">{marketError || 'Loading market data…'}</p>
             )}
           </div>
         </div>
@@ -493,17 +482,19 @@ export default function LiveTradingDashboard() {
 
         {visiblePositions.length === 0 ? (
           <div className="py-8 text-center">
-            <p className="text-xs text-zinc-600">No open positions. The bot will open trades automatically on the next scan.</p>
+            <p className="text-xs text-zinc-600">{positionsAvailable ? 'No open positions recorded. Exchange holdings may differ; check Live Execution for reconciliation.' : 'Open positions could not be confirmed.'}</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {visiblePositions.map(p => {
               const meta = FACTIONS.find(f => f.id === p.faction_id);
               const isLong = p.side === 'long';
-              const pnlPositive = p.unrealized_pnl >= 0;
-              const pnlPct = p.pnl_pct ?? 0;
+              const pnl = positionUnrealizedPnl(p);
+              const pnlPositive = pnl !== null && pnl >= 0;
+              const pnlPct = p.current_price !== null && Number(p.entry_price) > 0
+                ? ((p.current_price - Number(p.entry_price)) / Number(p.entry_price)) * 100 * (isLong ? 1 : -1) : null;
               const entry = Number(p.entry_price);
-              const current = p.current_price ?? entry;
+              const current = p.current_price;
               const stop = Number(p.stop_loss);
               const target = Number(p.take_profit);
               const liveTrade = (p as OpenPosition & { is_live?: boolean }).is_live;
@@ -515,7 +506,7 @@ export default function LiveTradingDashboard() {
               // Distance to SL/TP in %
               const distToSL = isLong ? ((entry - stop) / entry) * 100 : ((stop - entry) / entry) * 100;
               const distToTP = isLong ? ((target - entry) / entry) * 100 : ((entry - target) / entry) * 100;
-              const progressToTP = distToTP > 0 ? Math.max(0, Math.min(100, (pnlPct / distToTP) * 100)) : 0;
+              const progressToTP = pnlPct !== null && distToTP > 0 ? Math.max(0, Math.min(100, (pnlPct / distToTP) * 100)) : 0;
 
               return (
                 <div key={p.id} className="group relative overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950/60 p-4 transition-all hover:border-zinc-700">
@@ -541,10 +532,10 @@ export default function LiveTradingDashboard() {
                   {/* P&L */}
                   <div className="mb-3 flex items-baseline justify-between pl-2">
                     <span className={`font-mono text-lg font-bold tabular-nums ${pnlPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {pnlPositive ? '+' : ''}{p.unrealized_pnl.toLocaleString('en-US', { maximumFractionDigits: 4 })}
+                      {pnl === null ? 'Quote unavailable' : `${pnlPositive ? '+' : ''}${pnl.toLocaleString('en-US', { maximumFractionDigits: 4 })}`}
                     </span>
                     <span className={`font-mono text-xs font-bold tabular-nums ${pnlPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%
+                      {pnlPct === null ? '—' : `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`}
                     </span>
                   </div>
 
@@ -558,7 +549,7 @@ export default function LiveTradingDashboard() {
                       <div className="absolute left-1/2 top-0 h-full w-px bg-zinc-600" />
                       <div
                         className={`h-1.5 rounded-full transition-all ${pnlPositive ? 'bg-emerald-500' : 'bg-red-500'}`}
-                        style={{ width: `${pnlPositive ? 50 + progressToTP / 2 : 50 - Math.min(50, Math.abs(pnlPct) / distToSL * 50)}%` }}
+                        style={{ width: `${pnlPct === null ? 0 : pnlPositive ? 50 + progressToTP / 2 : 50 - Math.min(50, Math.abs(pnlPct) / Math.max(distToSL, 0.001) * 50)}%` }}
                       />
                     </div>
                   </div>
@@ -571,7 +562,7 @@ export default function LiveTradingDashboard() {
                     </div>
                     <div className="flex items-center gap-1 text-zinc-600">
                       <span>Current:</span>
-                      <span className="font-mono tabular-nums text-zinc-400">${current.toFixed(2)}</span>
+                      <span className="font-mono tabular-nums text-zinc-400">{current === null ? '—' : `$${current.toFixed(4)}`}</span>
                     </div>
                     {peakPrice && Number(peakPrice) > 0 && (
                       <div className="flex items-center gap-1 text-zinc-600">
@@ -589,12 +580,13 @@ export default function LiveTradingDashboard() {
                     </div>
                     {hasPartialExit && (
                       <div className="flex items-center gap-1 text-zinc-600">
-                        <span className="rounded bg-amber-500/20 px-1 text-[9px] font-bold text-amber-400">50% SOLD</span>
+                        <span className="rounded bg-amber-500/20 px-1 text-[9px] font-bold text-amber-400">PARTIAL EXIT</span>
                         <span className="font-mono tabular-nums text-amber-400/70">+${partialPnl.toFixed(2)}</span>
                       </div>
                     )}
                   </div>
 
+                  {p.execution_error && <p role="alert" className="mt-3 pl-2 text-xs text-amber-300">Close needs attention: {p.execution_error}</p>}
                   {/* Strategy tag */}
                   <div className="mt-2 flex items-center gap-1 pl-2">
                     <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold" style={{ backgroundColor: `${stratColor}20`, color: stratColor }}>
@@ -650,7 +642,7 @@ export default function LiveTradingDashboard() {
             <h3 className="text-sm font-semibold text-zinc-300">Recent Trades</h3>
           </div>
           {visibleHistory.length === 0 ? (
-            <p className="py-4 text-center text-xs text-zinc-600">No closed trades yet</p>
+            <p className="py-4 text-center text-xs text-zinc-600">{historyAvailable ? 'No closed trades recorded' : 'Trade history unavailable'}</p>
           ) : (
             <div className="space-y-1 max-h-64 overflow-y-auto">
               {visibleHistory.slice(0, 20).map(t => {
@@ -686,7 +678,7 @@ export default function LiveTradingDashboard() {
           <Shield className="h-5 w-5 text-red-400" />
           <div className="flex-1">
             <p className="text-sm font-semibold text-zinc-300">Emergency Kill Switch</p>
-            <p className="text-[10px] text-zinc-600">Immediately halts all trading and force-closes positions</p>
+            <p className="text-[10px] text-zinc-600">Halts new trading. Position exits depend on the worker; verify remaining holdings in Live Execution.</p>
           </div>
           {killActive ? (
             <button
@@ -724,7 +716,7 @@ export default function LiveTradingDashboard() {
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
         <div className="mb-2 flex items-center gap-2">
           <Radio className="h-4 w-4 text-cyan-400" />
-          <h3 className="text-xs font-semibold text-zinc-400">Scanning {TRADING_PAIRS.length} Pairs</h3>
+          <h3 className="text-xs font-semibold text-zinc-400">Configured coverage: {TRADING_PAIRS.length} pairs</h3>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {TRADING_PAIRS.map(pair => {

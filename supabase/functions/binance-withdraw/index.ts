@@ -68,7 +68,7 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-async function requireHarvestCaller(req: Request, route: string): Promise<Response | null> {
+async function requireHarvestCaller(req: Request): Promise<Response | null> {
   const provided = req.headers.get("x-cron-secret") ?? "";
   const { data, error } = await supabase
     .from("internal_secrets")
@@ -429,7 +429,7 @@ Deno.serve(async (req: Request) => {
     const path = url.pathname.replace("/binance-withdraw", "");
 
     const denied = path === "/harvest" || path === "/rules"
-      ? await requireHarvestCaller(req, path)
+      ? await requireHarvestCaller(req)
       : await requireOperator(req, path);
     if (denied) return denied;
 

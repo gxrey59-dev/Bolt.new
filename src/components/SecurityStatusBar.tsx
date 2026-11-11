@@ -1,18 +1,11 @@
 import { useCallback, useRef, useState } from 'react';
 import { ChevronDown, ShieldAlert, ShieldCheck, ShieldX } from 'lucide-react';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
+import { assessTradingStatus, type FeedConfig } from '@/lib/riskStatus';
 
 const CONFIG_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/binance-feed/config`;
 
 type Level = 'green' | 'yellow' | 'red';
-
-interface FeedConfig {
-  paperMode: boolean;
-  killSwitch: boolean;
-  killSwitchReason?: string | null;
-  dailyLossAccumulator?: number;
-  maxDailyLossPct?: number;
-}
 
 interface SecurityStatus {
   level: Level;
@@ -29,7 +22,7 @@ const LEVELS: Record<Level, {
     text: 'text-emerald-300',
     border: 'border-emerald-500/25',
     bg: 'bg-emerald-500/[0.06]',
-    label: 'SECURE',
+    label: 'PAPER MODE',
     icon: ShieldCheck,
   },
   yellow: {
@@ -37,7 +30,7 @@ const LEVELS: Record<Level, {
     text: 'text-amber-300',
     border: 'border-amber-500/30',
     bg: 'bg-amber-500/[0.06]',
-    label: 'CAUTION',
+    label: 'STATUS',
     icon: ShieldAlert,
   },
   red: {
@@ -45,50 +38,10 @@ const LEVELS: Record<Level, {
     text: 'text-red-300',
     border: 'border-red-500/40',
     bg: 'bg-red-500/[0.08]',
-    label: 'LOCKDOWN',
+    label: 'HALTED',
     icon: ShieldX,
   },
 };
-
-function assess(config: FeedConfig | null, failed: boolean, stale: boolean): SecurityStatus {
-  if (failed) {
-    return { level: 'red', title: 'Security feed unreachable', reasons: ['Could not reach the security feed. Controls state is unverified.'], checkedAt: Date.now() };
-  }
-  if (!config) {
-    return { level: 'yellow', title: 'Waiting for security feed', reasons: ['First security check in progress.'], checkedAt: null };
-  }
-  const reasons: string[] = [];
-  let level: Level = 'green';
-  if (config.killSwitch) {
-    return {
-      level: 'red',
-      title: 'Kill switch active — trading halted',
-      reasons: [config.killSwitchReason ? `Kill switch tripped: ${config.killSwitchReason}` : 'Kill switch is tripped. All trading is halted.'],
-      checkedAt: Date.now(),
-    };
-  }
-  if (!config.paperMode) {
-    reasons.push('Live trading active — real exchange funds are in play.');
-    level = 'yellow';
-  }
-  if (config.maxDailyLossPct != null && config.dailyLossAccumulator != null && config.dailyLossAccumulator > config.maxDailyLossPct * 0.7) {
-    reasons.push(`Daily loss at ${config.dailyLossAccumulator.toFixed(1)}% of ${config.maxDailyLossPct}% circuit-breaker threshold.`);
-    level = 'yellow';
-  }
-  if (stale) {
-    reasons.push('Security feed has not refreshed recently — status may be out of date.');
-    level = 'yellow';
-  }
-  if (reasons.length === 0) {
-    reasons.push('Feed connected, kill switch armed, no live-fund exposure flagged.');
-  }
-  return {
-    level,
-    title: level === 'green' ? 'All security controls nominal' : 'Security advisory',
-    reasons,
-    checkedAt: Date.now(),
-  };
-}
 
 export default function SecurityStatusBar() {
   const [status, setStatus] = useState<SecurityStatus>({
@@ -125,7 +78,7 @@ export default function SecurityStatusBar() {
       failed = true;
     }
     const stale = lastSuccessRef.current !== null && Date.now() - lastSuccessRef.current > 90_000;
-    setStatus(assess(failed ? null : config, failed, stale));
+    setStatus(assessTradingStatus(failed ? null : config, failed, stale));
   }, []);
 
   useVisibilityPolling(load, 30_000);

@@ -26,23 +26,23 @@ const PHASES: Phase[] = [
     id: 1,
     name: 'Prove the Engine',
     target: '$10K/mo',
-    timeline: 'Tonight, hour 1',
+    timeline: 'Validation phase',
     icon: Rocket,
     accent: 'text-emerald-400',
     bar: 'bg-emerald-400',
     glow: 'from-emerald-500/15',
     milestones: [
-      { label: 'Scale trading capital from $22 to $100K', done: false },
-      { label: 'Improve win rate from 33% to 55%+', done: false },
+      { label: 'Reconcile exchange holdings and establish an approved capital budget', done: false },
+      { label: 'Validate net performance including fees and drawdowns', done: false },
       { label: 'Get first NFT mints (deploy on-chain)', done: false },
-      { label: 'Connect real DeFi wallets', done: true },
+      { label: 'Verify wallet ownership and funded protocol positions', done: false },
     ],
   },
   {
     id: 2,
     name: 'Productize',
     target: '$100K/mo',
-    timeline: 'Tonight, hours 2–3',
+    timeline: 'After product validation',
     icon: TrendingUp,
     accent: 'text-cyan-400',
     bar: 'bg-cyan-400',
@@ -58,7 +58,7 @@ const PHASES: Phase[] = [
     id: 3,
     name: 'Scale & Distribute',
     target: '$1M/mo',
-    timeline: 'Tonight, hours 4–6',
+    timeline: 'After repeatable demand',
     icon: Building2,
     accent: 'text-amber-400',
     bar: 'bg-amber-400',
@@ -74,7 +74,7 @@ const PHASES: Phase[] = [
     id: 4,
     name: 'Institutional & DAO',
     target: '$10M/mo',
-    timeline: 'Overnight, hours 7–12',
+    timeline: 'After operational review',
     icon: Globe,
     accent: 'text-sky-400',
     bar: 'bg-sky-400',
@@ -100,13 +100,13 @@ export default function BillionRoadmap() {
         <div className="relative">
           <div className="flex items-center gap-2 mb-3">
             <Crown className="h-6 w-6 text-amber-400" />
-            <h2 className="text-xl font-bold text-zinc-100">The Path to $1,000,000,000</h2>
-            <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">ROADMAP · OVERNIGHT RUN</span>
+            <h2 className="text-xl font-bold text-zinc-100">Growth roadmap</h2>
+            <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">PLANNING SCENARIO</span>
           </div>
           <p className="text-sm text-zinc-400 max-w-2xl">
-            Four phases from proving the engine to institutional scale, compressed into a
-            single overnight run instead of 36 months. Each phase sets a monthly revenue target and
-            the milestones required to unlock the next.
+            Four planning phases from operational validation to larger distribution. Targets below are
+            ambitions, not forecasts or current earnings. Each milestone needs evidence before
+            moving to the next phase; no completion dates are assumed.
           </p>
 
           {/* Cumulative revenue axis */}
@@ -166,7 +166,7 @@ export default function BillionRoadmap() {
                   <div className="flex items-center gap-3 mt-1 text-[11px] text-zinc-500">
                     <span className="flex items-center gap-1">
                       <Target className="h-3 w-3" />
-                      {phase.target}
+                      Target: {phase.target}
                     </span>
                     <span className="text-zinc-700">·</span>
                     <span>{phase.timeline}</span>
@@ -178,7 +178,7 @@ export default function BillionRoadmap() {
                   <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
                     <div
                       className={`h-1.5 rounded-full transition-all ${phase.bar}`}
-                      style={{ width: `${Math.max(progress, 2)}%` }}
+                      style={{ width: `${progress}%` }}
                     />
                   </div>
                   <p className="mt-1 text-right text-[9px] text-zinc-600">

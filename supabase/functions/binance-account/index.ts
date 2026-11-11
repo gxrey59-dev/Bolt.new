@@ -1,8 +1,9 @@
+import { collectHistorySymbols, mapInBatches, SYMBOL_PATTERN } from "./history.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
@@ -17,8 +18,6 @@ const BINANCE_BASE = "https://api.binance.us";
 const BINANCE_API_KEY = Deno.env.get("BINANCE_API_KEY_3")?.trim() ?? "";
 const BINANCE_SECRET_KEY = Deno.env.get("BINANCE_SECRET_KEY_3")?.trim() ?? "";
 
-const DEFAULT_SYMBOLS = ["BCHUSDT", "LTCUSDT"];
-const SYMBOL_PATTERN = /^[A-Z0-9]{2,15}USDT$/;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: jsonHeaders });
@@ -91,6 +90,7 @@ async function signedGet(path: string, params: Record<string, string> = {}): Pro
   query.set("signature", signature);
   const res = await fetch(`${BINANCE_BASE}${path}?${query.toString()}`, {
     headers: { "X-MBX-APIKEY": BINANCE_API_KEY },
+    signal: AbortSignal.timeout(12_000),
   });
   const text = await res.text();
   let data: unknown = null;
@@ -102,34 +102,98 @@ async function signedGet(path: string, params: Record<string, string> = {}): Pro
   return data;
 }
 
+interface Balance { asset: string; free: number; locked: number }
+interface ExchangeOrder { symbol: string; orderId: number; [key: string]: unknown }
+
+async function readAccount() {
+  const account = await signedGet("/api/v3/account") as { canTrade?: boolean; balances?: { asset: string; free: string; locked: string }[] };
+  if (!Array.isArray(account.balances)) throw new Error("Exchange balance response was incomplete");
+  const balances: Balance[] = account.balances.map(b => ({ asset: b.asset, free: Number(b.free), locked: Number(b.locked) }));
+  if (balances.some(b => !Number.isFinite(b.free) || !Number.isFinite(b.locked))) throw new Error("Exchange returned an invalid balance");
+  return { balances: balances.filter(b => b.free > 0 || b.locked > 0), canTrade: account.canTrade === true };
+}
+
 async function getAccount(): Promise<Response> {
-  const account = await signedGet("/api/v3/account") as { balances?: { asset: string; free: string; locked: string }[] };
-  const balances = (account.balances ?? [])
-    .map((b) => ({ asset: b.asset, free: Number(b.free), locked: Number(b.locked) }))
-    .filter((b) => b.free > 0 || b.locked > 0);
-  return jsonResponse({ ok: true, balances, fetchedAt: new Date().toISOString() });
+  return jsonResponse({ ok: true, ...await readAccount(), fetchedAt: new Date().toISOString() });
+}
+
+async function getOverview(): Promise<Response> {
+  const [account, ordersResult, tradesResult, configuredResult, entryAttempts] = await Promise.all([
+    readAccount(),
+    signedGet("/api/v3/openOrders").then(data => {
+      if (!Array.isArray(data)) throw new Error("Exchange open-order response was incomplete");
+      return { data: data as ExchangeOrder[], error: null as string | null };
+    }).catch(error => ({ data: [] as ExchangeOrder[], error: error instanceof Error ? error.message : "Open orders unavailable" })),
+    supabase.from("paper_trades")
+      .select("id,symbol,status,quantity,remaining_quantity,closed_at,binance_order_id,binance_close_order_id,execution_error")
+      .eq("is_live", true).order("opened_at", { ascending: false }).limit(1000),
+    supabase.from("bot_pair_allowlist").select("symbol").eq("enabled", true).limit(1000),
+    supabase.from("live_entry_attempts").select("symbol,state,entry_order_id,created_at")
+      .in("state", ["claimed", "reconciliation_required"]).order("created_at", { ascending: false }).limit(100),
+  ]);
+  const warnings: string[] = [];
+  if (tradesResult.error) warnings.push("Tracked trade history is unavailable; reconciliation could not be checked.");
+  if (configuredResult.error) warnings.push("Configured trading pairs are unavailable.");
+  if (ordersResult.error) warnings.push(ordersResult.error);
+  if (entryAttempts.error) warnings.push("Pending entry attempts could not be checked. Apply the matching backend migration before relying on reconciliation.");
+  if (entryAttempts.data?.length) warnings.push(`Entry confirmation requires review for ${[...new Set(entryAttempts.data.map(row => row.symbol))].join(', ')}. Confirm exchange fills before clearing the entry claim.`);
+  const tracked = tradesResult.data ?? [];
+  if (tracked.length === 1000) warnings.push("Pair discovery covers the latest 1,000 tracked trades.");
+  const universe = collectHistorySymbols({
+    held: account.balances.map(b => b.asset),
+    openOrders: ordersResult.data.map(order => order.symbol),
+    configured: (configuredResult.data ?? []).map(row => row.symbol),
+    tracked: [...tracked.map(row => row.symbol), ...(entryAttempts.data ?? []).map(row => row.symbol)],
+  });
+  const reconciliationCandidates = tracked
+    .filter(row => row.status === "closed" && row.binance_order_id && !row.binance_close_order_id)
+    .map(row => {
+      const asset = row.symbol.endsWith("USDT") ? row.symbol.slice(0, -4) : null;
+      const balance = account.balances.find(b => b.asset === asset);
+      return {
+        id: row.id, symbol: row.symbol, quantity: Number(row.remaining_quantity ?? row.quantity),
+        closedAt: row.closed_at, buyOrderId: row.binance_order_id,
+        exchangeBalance: asset ? (balance?.free ?? 0) + (balance?.locked ?? 0) : null,
+      };
+    }).filter(row => row.exchangeBalance === null || row.exchangeBalance > 0);
+  return jsonResponse({
+    ok: true, ...account, ...universe, openOrders: ordersResult.error ? null : ordersResult.data,
+    reconciliationCandidates, reconciliationChecked: !tradesResult.error,
+    warnings, fetchedAt: new Date().toISOString(),
+  });
 }
 
 async function getOrders(url: URL): Promise<Response> {
   const requested = url.searchParams.get("symbols");
-  const symbols = requested ? requested.split(",").map((s) => s.trim().toUpperCase()) : DEFAULT_SYMBOLS;
-  if (symbols.length === 0 || symbols.length > 5 || !symbols.every((s) => SYMBOL_PATTERN.test(s))) {
-    return jsonResponse({ error: "Invalid symbol list" }, 400);
+  // Explicit symbols keep each read bounded and prevent silently looking at only BCH/LTC.
+  if (!requested) return jsonResponse({ error: "Choose symbols from /overview before requesting order history" }, 400);
+  const symbols = [...new Set(requested.split(",").map(s => s.trim().toUpperCase()))];
+  if (symbols.length === 0 || symbols.length > 5 || !symbols.every(s => SYMBOL_PATTERN.test(s))) {
+    return jsonResponse({ error: "Choose between 1 and 5 USDT pairs" }, 400);
   }
-
-  const results = await Promise.all(symbols.map(async (symbol) => {
-    const [orders, trades] = await Promise.all([
-      signedGet("/api/v3/allOrders", { symbol, limit: "50" }) as Promise<Record<string, unknown>[]>,
-      signedGet("/api/v3/myTrades", { symbol, limit: "1000" }) as Promise<Record<string, unknown>[]>,
-    ]);
-    return { symbol, orders, trades };
-  }));
-
-  return jsonResponse({ ok: true, symbols: results, fetchedAt: new Date().toISOString() });
+  const results = await mapInBatches(symbols, 2, async symbol => {
+    try {
+      const [orders, trades] = await Promise.all([
+        signedGet("/api/v3/allOrders", { symbol, limit: "50" }),
+        signedGet("/api/v3/myTrades", { symbol, limit: "1000" }),
+      ]);
+      if (!Array.isArray(orders) || !Array.isArray(trades)) throw new Error("Exchange history response was incomplete");
+      return { symbol, orders, trades, ordersMayBeTruncated: orders.length === 50, tradesMayBeTruncated: trades.length === 1000, error: null };
+    } catch (error) {
+      return { symbol, error: error instanceof Error ? error.message : "History unavailable" };
+    }
+  });
+  return jsonResponse({
+    ok: true, symbols: results.filter(row => !row.error),
+    errors: results.filter(row => row.error).map(row => ({ symbol: row.symbol, error: row.error })),
+    fetchedAt: new Date().toISOString(),
+  });
 }
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
+
+  if (req.method !== "GET") return jsonResponse({ error: "Method not allowed" }, 405);
 
   try {
     const url = new URL(req.url);
@@ -137,6 +201,7 @@ Deno.serve(async (req: Request) => {
     const denied = await requireOperator(req, route ?? "unknown");
     if (denied) return denied;
 
+    if (route === "overview") return await getOverview();
     if (route === "account") return await getAccount();
     if (route === "orders") return await getOrders(url);
     return jsonResponse({ error: "Unknown route" }, 404);

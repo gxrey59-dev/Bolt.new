@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+import { entryClientOrderId, isDefinitiveOrderRejection, runClaimedEntry, recoverEntryTracking, liveExitBlockReason, parseOrderReceipt, RECONCILIATION_REQUIRED, runClaimedExit, valueOpenPosition, type ExchangeOrderResult } from "./trade-safety.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -160,10 +161,10 @@ async function refreshEligibleFactions(): Promise<string[]> {
     if ((f.open_positions ?? 0) >= 3) continue;
     eligible.push(f.id);
     if (f.status === "paused" && (!f.paused_until || f.paused_until <= nowIso)) {
-      await supabase.from("factions").update({ status: "active", paused_until: null }).eq("id", f.id);
+      await checkedWrite(supabase.from("factions").update({ status: "active", paused_until: null }).eq("id", f.id), "factions update");
     }
     if (f.status === "cooldown" && (!f.cooldown_until || f.cooldown_until <= nowIso)) {
-      await supabase.from("factions").update({ status: "active", cooldown_until: null }).eq("id", f.id);
+      await checkedWrite(supabase.from("factions").update({ status: "active", cooldown_until: null }).eq("id", f.id), "factions update");
     }
   }
   eligibleFactionCache.ids = eligible;
@@ -485,45 +486,22 @@ async function hmacSha256(key: string, message: string): Promise<string> {
 }
 
 async function getLiveUsdtBalance(): Promise<number> {
-  if (!BINANCE_API_KEY || !BINANCE_SECRET_KEY) return 0;
+  if (!BINANCE_API_KEY || !BINANCE_SECRET_KEY) throw new Error("Binance API keys not configured");
   const params = new URLSearchParams({ recvWindow: "10000", timestamp: Date.now().toString() });
   const sig = await hmacSha256(BINANCE_SECRET_KEY, params.toString());
   const res = await fetch(`${BINANCE_BASE}/api/v3/account?${params.toString()}&signature=${sig}`, {
     headers: { "X-MBX-APIKEY": BINANCE_API_KEY },
   });
   const data = await res.json();
-  if (data.code) return 0;
+  if (!res.ok || data.code || !Array.isArray(data.balances)) throw new Error(`Binance account unavailable: ${data.msg ?? res.status}`);
   const usdt = (data.balances ?? []).find((b: { asset: string }) => b.asset === "USDT");
-  return usdt ? parseFloat(usdt.free) : 0;
+  const balance = usdt ? Number(usdt.free) : 0;
+  if (!Number.isFinite(balance) || balance < 0) throw new Error("Binance returned an invalid USDT balance");
+  return balance;
 }
 
-async function getLiveAssetFreeBalance(asset: string): Promise<number> {
-  if (!BINANCE_API_KEY || !BINANCE_SECRET_KEY) return 0;
-  const params = new URLSearchParams({ recvWindow: "10000", timestamp: Date.now().toString() });
-  const sig = await hmacSha256(BINANCE_SECRET_KEY, params.toString());
-  const res = await fetch(`${BINANCE_BASE}/api/v3/account?${params.toString()}&signature=${sig}`, {
-    headers: { "X-MBX-APIKEY": BINANCE_API_KEY },
-  });
-  const data = await res.json();
-  if (data.code) return 0;
-  const row = (data.balances ?? []).find((b: { asset: string }) => b.asset === asset);
-  return row ? parseFloat(row.free) : 0;
-}
-
-async function cancelOpenOrders(symbol: string): Promise<string | null> {
-  if (!BINANCE_API_KEY || !BINANCE_SECRET_KEY) return "Binance API keys not configured";
-  const params = new URLSearchParams({ symbol, recvWindow: "10000", timestamp: Date.now().toString() });
-  const sig = await hmacSha256(BINANCE_SECRET_KEY, params.toString());
-  const res = await fetch(`${BINANCE_BASE}/api/v3/openOrders?${params.toString()}&signature=${sig}`, {
-    method: "DELETE",
-    headers: { "X-MBX-APIKEY": BINANCE_API_KEY },
-  });
-  if (!res.ok) return (await res.text()).slice(0, 200);
-  return null;
-}
-
-async function placeBinanceOrder(symbol: string, side: "BUY" | "SELL", quantity: number, isMarket: boolean): Promise<{ orderId: string | null; error: string | null }> {
-  if (!BINANCE_API_KEY || !BINANCE_SECRET_KEY) return { orderId: null, error: "Binance API keys not configured" };
+async function placeBinanceOrder(symbol: string, side: "BUY" | "SELL", quantity: number, isMarket: boolean, clientOrderId?: string): Promise<ExchangeOrderResult> {
+  if (!BINANCE_API_KEY || !BINANCE_SECRET_KEY) return { orderId: null, error: "Binance API keys not configured", definitiveRejection: true };
 
   // Round quantity to valid LOT_SIZE step
   const filters = await getSymbolFilters();
@@ -531,7 +509,7 @@ async function placeBinanceOrder(symbol: string, side: "BUY" | "SELL", quantity:
   let qty = quantity;
   if (f) {
     qty = roundToStep(qty, f.stepSize);
-    if (qty < f.minQty) return { orderId: null, error: `Quantity ${qty} below min ${f.minQty} for ${symbol}` };
+    if (qty < f.minQty) return { orderId: null, error: `Quantity ${qty} below min ${f.minQty} for ${symbol}`, definitiveRejection: true };
   }
   // Determine decimal precision from step size
   let decimals = 6;
@@ -547,10 +525,12 @@ async function placeBinanceOrder(symbol: string, side: "BUY" | "SELL", quantity:
     symbol,
     side,
     type: isMarket ? "MARKET" : "LIMIT",
+    newOrderRespType: "FULL",
     quantity: qty.toFixed(decimals),
     recvWindow: "10000",
     timestamp: Date.now().toString(),
   });
+  if (clientOrderId) params.set("newClientOrderId", clientOrderId);
   if (!isMarket) {
     params.set("timeInForce", "GTC");
   }
@@ -565,26 +545,87 @@ async function placeBinanceOrder(symbol: string, side: "BUY" | "SELL", quantity:
 
   if (!res.ok) {
     const text = await res.text();
-    return { orderId: null, error: `Order failed (${res.status}): ${text.slice(0, 200)}` };
+    const definitiveRejection = isDefinitiveOrderRejection(res.status, text);
+    return { orderId: null, definitiveRejection, error: `${!definitiveRejection ? `${RECONCILIATION_REQUIRED} ` : ""}Order failed (${res.status}): ${text.slice(0, 200)}` };
   }
   const data = await res.json();
-  return { orderId: String(data.orderId), error: null };
+  return parseOrderReceipt(data, Number(qty.toFixed(decimals)));
+}
+
+type EntrySettlement = "rejected" | "reconciliation_required" | "tracked" | "compensated";
+
+async function settleLiveEntry(attemptId: string, state: EntrySettlement, result: ExchangeOrderResult, tradeId?: string, compensationOrderId?: string): Promise<void> {
+  const { data, error } = await supabase.rpc("settle_live_entry", {
+    p_attempt_id: attemptId, p_state: state,
+    p_entry_order_id: result.orderId,
+    p_trade_id: tradeId ?? null,
+    p_compensation_order_id: compensationOrderId ?? null,
+    p_detail: result.error,
+  });
+  if (error || data !== true) throw new Error(`Entry settlement failed; claim remains blocked: ${error?.message ?? "attempt changed"}`);
+}
+
+interface ExitTrade {
+  id: string;
+  symbol: string;
+  side: string;
+  binance_order_id?: string | null;
+  execution_error?: string | null;
+  remaining_quantity?: number | string | null;
+}
+
+async function executeLiveExit(trade: ExitTrade, quantity: number): Promise<ExchangeOrderResult> {
+  const blocked = liveExitBlockReason(trade);
+  if (blocked) return { orderId: null, error: blocked, skipFailureWrite: blocked.startsWith(RECONCILIATION_REQUIRED) };
+  const claimToken = `${RECONCILIATION_REQUIRED} exit in progress [${crypto.randomUUID()}]`;
+  return runClaimedExit({
+    quantity, claimToken,
+    claim: async () => {
+      // Quantity rejects a stale snapshot after another partial exit completed.
+      const { data, error } = await persistExitUpdate(trade, { execution_error: claimToken });
+      if (error) throw new Error(error.message);
+      return data !== null;
+    },
+    submit: () => placeBinanceOrder(trade.symbol, trade.side === "long" ? "SELL" : "BUY", quantity, true),
+  });
+}
+
+async function persistExitUpdate(trade: ExitTrade, values: Record<string, unknown>, result?: ExchangeOrderResult) {
+  let update = supabase.from("paper_trades").update(values).eq("id", trade.id).eq("status", "open");
+  const expectedError = result?.claimToken ?? trade.execution_error ?? null;
+  update = expectedError === null ? update.is("execution_error", null) : update.eq("execution_error", expectedError);
+  update = trade.remaining_quantity == null
+    ? update.is("remaining_quantity", null)
+    : update.eq("remaining_quantity", trade.remaining_quantity);
+  return await update.select("id").maybeSingle();
+}
+
+async function recordCloseFailure(trade: ExitTrade, quantity: number, result: ExchangeOrderResult): Promise<void> {
+  const detail = result.error ?? "Exchange did not confirm the close";
+  // Losing the claim must never overwrite another operation's durable marker.
+  const persisted = result.skipFailureWrite ? { error: null } : await persistExitUpdate(trade, {
+    execution_error: detail,
+    ...(result.orderId ? { binance_close_order_id: result.orderId } : {}),
+  }, result);
+  const { error: auditError } = await supabase.from("audit_log").insert({
+    event_type: "live_close_failed", entity_type: "paper_trades", entity_id: trade.id,
+    message: `CLOSE FAILED: ${trade.symbol} — ${detail}`,
+    metadata: { symbol: trade.symbol, quantity, error: detail, order_id: result.orderId, status: result.status, executed_quantity: result.executedQuantity },
+  });
+  if (persisted.error || auditError) throw new Error(`Close failure could not be fully recorded: ${persisted.error?.message ?? auditError?.message}; ${detail}`);
+}
+
+async function checkedWrite(operation: PromiseLike<{ error: { message: string } | null }>, label: string): Promise<void> {
+  const { error } = await operation;
+  if (error) throw new Error(`Database ${label} failed: ${error.message}`);
 }
 
 // ─── Config ────────────────────────────────────────────────────────
 
 async function getStrategyConfig(): Promise<FullConfig> {
-  const { data } = await supabase.from("strategy_config").select("*").eq("id", 1).maybeSingle();
-  if (!data) {
-    return {
-      rsiOversold: 35, rsiOverbought: 65, macdThreshold: 0, momentumLookback: 5,
-      activeStrategies: ["rsi_oversold", "rsi_overbought", "macd_crossover", "momentum_breakout", "mean_reversion"],
-      stopLossPct: 1, takeProfitPct: 6, maxPositionPct: 10, startingCapital: 5,
-      paperMode: true, killSwitch: false, killSwitchReason: null,
-      maxDailyLossPct: 10, minWinRateThreshold: 90, liveCapital: 5,
-      dailyLossAccumulator: 0, dailyLossResetAt: null,
-    };
-  }
+  const { data, error } = await supabase.from("strategy_config").select("*").eq("id", 1).maybeSingle();
+  if (error) throw new Error(`Strategy configuration unavailable: ${error.message}`);
+  if (!data) throw new Error("Strategy configuration is missing");
   return {
     rsiOversold: Number(data.rsi_oversold), rsiOverbought: Number(data.rsi_overbought),
     macdThreshold: Number(data.macd_threshold), momentumLookback: data.momentum_lookback,
@@ -620,10 +661,11 @@ async function getAllowedFactionsBySymbol(): Promise<Map<string, string[]>> {
 }
 
 async function getStrategyWinRates(): Promise<Map<string, { winRate: number; totalTrades: number }>> {
-  const { data: trades } = await supabase
+  const { data: trades, error } = await supabase
     .from("paper_trades")
     .select("strategy, pnl")
     .eq("status", "closed");
+  if (error) throw new Error(`Strategy trade history unavailable: ${error.message}`);
   const stats = new Map<string, { wins: number; total: number }>();
   for (const t of trades ?? []) {
     const key = t.strategy as string;
@@ -671,37 +713,37 @@ async function checkKillSwitch(config: FullConfig): Promise<{ tripped: boolean; 
 }
 
 async function tripKillSwitch(reason: string): Promise<void> {
-  await supabase.from("strategy_config").update({
+  await checkedWrite(supabase.from("strategy_config").update({
     kill_switch: true,
     kill_switch_reason: reason,
     kill_switch_tripped_at: new Date().toISOString(),
-  }).eq("id", 1);
+  }).eq("id", 1).select("id").single(), "strategy_config update");
 
-  await supabase.from("audit_log").insert({
+  await checkedWrite(supabase.from("audit_log").insert({
     event_type: "kill_switch_tripped",
     entity_type: "strategy_config",
     entity_id: "system",
     message: `KILL SWITCH TRIPPED: ${reason}`,
     metadata: { reason, timestamp: new Date().toISOString() },
-  });
+  }), "audit_log insert");
 }
 
 async function resetKillSwitch(): Promise<void> {
-  await supabase.from("strategy_config").update({
+  await checkedWrite(supabase.from("strategy_config").update({
     kill_switch: false,
     kill_switch_reason: null,
     kill_switch_tripped_at: null,
     daily_loss_accumulator: 0,
     daily_loss_reset_at: new Date().toISOString(),
-  }).eq("id", 1);
+  }).eq("id", 1).select("id").single(), "strategy_config update");
 
-  await supabase.from("audit_log").insert({
+  await checkedWrite(supabase.from("audit_log").insert({
     event_type: "kill_switch_reset",
     entity_type: "strategy_config",
     entity_id: "system",
     message: "Kill switch reset — trading resumed",
     metadata: { timestamp: new Date().toISOString() },
-  });
+  }), "audit_log insert");
 }
 
 // ─── Trade Execution ───────────────────────────────────────────────
@@ -712,17 +754,18 @@ async function executeTrade(
 ): Promise<{ tradeId: string | null; reasoning: string; error: string | null }> {
   const isLive = !config.paperMode;
 
-  const { data: faction } = await supabase
+  const { data: faction, error: factionReadError } = await supabase
     .from("factions")
     .select("paper_balance, open_positions")
     .eq("id", factionId)
     .maybeSingle();
-  if (!faction) return { tradeId: null, reasoning: "Faction not found", error: null };
+  if (factionReadError) throw new Error(`Faction unavailable: ${factionReadError.message}`);
+  if (!faction) throw new Error("Faction is missing");
 
   let balance: number;
   if (isLive) {
     balance = await getLiveUsdtBalance();
-    await supabase.from("strategy_config").update({ live_capital: balance }).eq("id", 1);
+    await checkedWrite(supabase.from("strategy_config").update({ live_capital: balance }).eq("id", 1), "strategy_config update");
   } else {
     balance = Number(faction.paper_balance);
   }
@@ -741,7 +784,7 @@ async function executeTrade(
   const affordableCap = availableBalance * (availableBalance < 20 ? 0.98 : 0.8);
   // Buffer above the exchange minimum so rounding to the lot size cannot drop the order below it
   const liveFloor = minNotional * 1.1;
-  const positionValue = isLive
+  let positionValue = isLive
     ? Math.min(Math.max(sizedPosition, liveFloor), affordableCap)
     : Math.min(sizedPosition, affordableCap);
   if (isLive && positionValue < minNotional) return { tradeId: null, reasoning: `Position value ${positionValue.toFixed(2)} below exchange minimum`, error: null };
@@ -768,30 +811,50 @@ async function executeTrade(
   const effectiveStopPct = Math.max(config.stopLossPct, Math.min(atrPctOfPrice * 1.5, 5.0));
   // Take profit at 3x the stop distance — let winners run for bigger gains
   const effectiveTpPct = Math.max(config.takeProfitPct, effectiveStopPct * 3);
-  const stopLoss = isLong ? currentPrice * (1 - effectiveStopPct / 100) : currentPrice * (1 + effectiveStopPct / 100);
-  const takeProfit = isLong ? currentPrice * (1 + effectiveTpPct / 100) : currentPrice * (1 - effectiveTpPct / 100);
+  let stopLoss = isLong ? currentPrice * (1 - effectiveStopPct / 100) : currentPrice * (1 + effectiveStopPct / 100);
+  let takeProfit = isLong ? currentPrice * (1 + effectiveTpPct / 100) : currentPrice * (1 - effectiveTpPct / 100);
 
   let binanceOrderId: string | null = null;
   let orderError: string | null = null;
+  let entryAttemptId: string | null = null;
 
   if (isLive) {
     const orderSide = isLong ? "BUY" : "SELL";
-    const orderResult = await placeBinanceOrder(symbol, orderSide as "BUY" | "SELL", quantity, true);
+    entryAttemptId = crypto.randomUUID();
+    const attemptId = entryAttemptId;
+    const orderResult = await runClaimedEntry({
+      attemptId,
+      claim: async () => {
+        const { data, error } = await supabase.rpc("claim_live_entry", {
+          p_attempt_id: attemptId, p_symbol: symbol, p_side: orderSide, p_quantity: quantity,
+        });
+        if (error) throw new Error(error.message);
+        return data === true;
+      },
+      submit: (clientOrderId) => placeBinanceOrder(symbol, orderSide, quantity, true, clientOrderId),
+      settleFailure: (state, result) => settleLiveEntry(attemptId, state, result),
+    });
     binanceOrderId = orderResult.orderId;
     orderError = orderResult.error;
     if (orderError || !binanceOrderId) {
-      await supabase.from("audit_log").insert({
+      await checkedWrite(supabase.from("audit_log").insert({
         event_type: "live_order_failed",
         entity_type: "paper_trades",
         entity_id: "system",
         message: `LIVE ORDER FAILED: ${symbol} ${orderSide} — ${orderError}`,
-        metadata: { symbol, side: orderSide, quantity, error: orderError },
-      });
+        metadata: { symbol, side: orderSide, quantity, error: orderError, entry_attempt_id: attemptId, client_order_id: entryClientOrderId(attemptId) },
+      }), "audit_log insert");
       return { tradeId: null, reasoning: `Live order failed: ${orderError}`, error: orderError };
     }
+    // Record confirmed execution, preserving the configured percentage limits.
+    quantity = orderResult.executedQuantity!;
+    currentPrice = orderResult.averagePrice!;
+    positionValue = quantity * currentPrice;
+    stopLoss = isLong ? currentPrice * (1 - effectiveStopPct / 100) : currentPrice * (1 + effectiveStopPct / 100);
+    takeProfit = isLong ? currentPrice * (1 + effectiveTpPct / 100) : currentPrice * (1 - effectiveTpPct / 100);
   }
 
-  const { data: trade, error } = await supabase.from("paper_trades").insert({
+  let { data: trade, error } = await supabase.from("paper_trades").insert({
     faction_id: factionId,
     symbol,
     side: signal.side,
@@ -826,50 +889,44 @@ async function executeTrade(
     },
   }).select().single();
 
-  if (error) {
-    // A live buy already succeeded. Immediately flatten it if persistence fails so
-    // the exchange can never hold an untracked position.
-    let compensationError: string | null = null;
-    let compensationOrderId: string | null = null;
-    if (isLive && binanceOrderId) {
-      const compensation = await placeBinanceOrder(symbol, isLong ? "SELL" : "BUY", quantity, true);
-      compensationError = compensation.error;
-      compensationOrderId = compensation.orderId;
+  if (error && entryAttemptId && binanceOrderId) {
+    // An insert response can be lost after commit. Recover a positively observed
+    // row, otherwise retain the claim for reconciliation. Never sell based on a
+    // database error or an absence check that may race the original commit.
+    const { data: persisted, error: lookupError } = await supabase.from("paper_trades")
+      .select("id").eq("is_live", true).eq("binance_order_id", binanceOrderId).maybeSingle();
+    const recovery = recoverEntryTracking(persisted?.id ?? null, lookupError?.message ?? error.message);
+    if (recovery.error) {
+      await settleLiveEntry(entryAttemptId, "reconciliation_required", { orderId: binanceOrderId, error: recovery.error });
+      return { tradeId: null, reasoning: recovery.error, error: recovery.error };
     }
-    await supabase.from("audit_log").insert({
-      event_type: "live_trade_persistence_failed",
-      entity_type: "paper_trades",
-      entity_id: "system",
-      message: `LIVE TRADE PERSISTENCE FAILED: ${symbol} — ${error.message}`,
-      metadata: {
-        symbol, quantity, entry_order_id: binanceOrderId,
-        compensation_order_id: compensationOrderId,
-        compensation_error: compensationError,
-      },
-    });
-    return {
-      tradeId: null,
-      reasoning: compensationError
-        ? `Insert failed and emergency flatten failed: ${compensationError}`
-        : `Insert failed; live order was flattened: ${error.message}`,
-      error: compensationError ?? error.message,
-    };
+    trade = persisted;
+    error = null;
+  }
+
+  if (error) {
+    return { tradeId: null, reasoning: `Insert failed: ${error.message}`, error: error.message };
+  }
+
+  if (!trade) throw new Error("Confirmed entry tracking response is missing; reconciliation required");
+  if (entryAttemptId) {
+    await settleLiveEntry(entryAttemptId, "tracked", { orderId: binanceOrderId, error: null }, trade.id);
   }
 
   if (!isLive) {
-    await supabase.from("factions").update({
+    await checkedWrite(supabase.from("factions").update({
       open_positions: (faction.open_positions ?? 0) + 1,
       paper_balance: balance - positionValue,
       updated_at: new Date().toISOString(),
-    }).eq("id", factionId);
+    }).eq("id", factionId), "factions update");
   } else {
-    await supabase.from("factions").update({
+    await checkedWrite(supabase.from("factions").update({
       open_positions: (faction.open_positions ?? 0) + 1,
       updated_at: new Date().toISOString(),
-    }).eq("id", factionId);
+    }).eq("id", factionId), "factions update");
   }
 
-  await supabase.from("audit_log").insert({
+  await checkedWrite(supabase.from("audit_log").insert({
     event_type: isLive ? "live_trade_open" : "paper_trade_open",
     entity_type: "paper_trades",
     entity_id: trade.id,
@@ -879,7 +936,7 @@ async function executeTrade(
       entry_price: currentPrice, position_value: positionValue,
       stop_loss: stopLoss, take_profit: takeProfit, is_live: isLive, binance_order_id: binanceOrderId,
     },
-  });
+  }), "audit_log insert");
 
   return { tradeId: trade.id, reasoning: signal.reasoning, error: null };
 }
@@ -891,7 +948,9 @@ interface PriceData {
 }
 
 async function checkOpenPositions(currentPrices: Map<string, number>, config: FullConfig, priceData?: Map<string, PriceData>): Promise<{ closed: number; totalLoss: number }> {
-  const { data: openTrades } = await supabase.from("paper_trades").select("*").eq("status", "open");
+  const { data: openTrades, error: positionsError } = await supabase.from("paper_trades").select("*").eq("status", "open");
+  if (positionsError) throw new Error(`Open positions unavailable: ${positionsError.message}`);
+  if (!Array.isArray(openTrades)) throw new Error("Open positions response was invalid");
   if (!openTrades || openTrades.length === 0) return { closed: 0, totalLoss: 0 };
 
   let closedCount = 0;
@@ -918,16 +977,16 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
     const peakPrice = Number(trade.peak_price ?? entry);
     const newPeak = isLong ? Math.max(peakPrice, intrabarHigh) : Math.min(peakPrice, intrabarLow);
     if (newPeak !== peakPrice) {
-      await supabase.from("paper_trades").update({
+      await checkedWrite(supabase.from("paper_trades").update({
         peak_price: newPeak,
         peak_price_at: new Date().toISOString(),
-      }).eq("id", trade.id);
+      }).eq("id", trade.id), "paper_trades update");
     }
 
     const profitPct = isLong
       ? ((currentPrice - entry) / entry) * 100
       : ((entry - currentPrice) / entry) * 100;
-    const hasPartialExit = trade.partial_exit_price !== null;
+    const hasPartialExit = trade.partial_exit_price != null;
     const remainingQty = Number(trade.remaining_quantity ?? trade.quantity);
     // After partial exit: trail tighter (1.2%) to protect profits on the runner
     const trailPct = hasPartialExit ? 1.2 : 2.0;
@@ -941,7 +1000,7 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
       const stopImproved = isLong ? newStop > stop : newStop < stop;
       if (stopImproved) {
         stop = newStop;
-        await supabase.from("paper_trades").update({ stop_loss: newStop }).eq("id", trade.id);
+        await checkedWrite(supabase.from("paper_trades").update({ stop_loss: newStop }).eq("id", trade.id), "paper_trades update");
       }
     }
     // Breakeven stop: once close-based profit exceeds 1.5%, move stop to entry
@@ -949,7 +1008,7 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
       const stopImproved = isLong ? entry > stop : entry < stop;
       if (stopImproved) {
         stop = entry;
-        await supabase.from("paper_trades").update({ stop_loss: entry }).eq("id", trade.id);
+        await checkedWrite(supabase.from("paper_trades").update({ stop_loss: entry }).eq("id", trade.id), "paper_trades update");
       }
     }
 
@@ -1002,177 +1061,108 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
 
       if (isPartialClose) {
         // ─── Partial exit: sell 50% at target, keep 50% riding ───
-        const partialQty = remainingQty * 0.5;
-        const newRemainingQty = remainingQty - partialQty;
-        const partialPnl = isLong ? (target - entry) * partialQty : (entry - target) * partialQty;
-
+        let partialQty = remainingQty * 0.5;
+        let exitPrice = target;
         let partialOrderId: string | null = null;
+        let exitResult: ExchangeOrderResult | undefined;
         if (isLive) {
-          if (!trade.binance_order_id) {
-            const executionError = "Live partial close blocked: entry order ID is missing";
-            await supabase.from("paper_trades").update({ execution_error: executionError }).eq("id", trade.id);
-            await supabase.from("audit_log").insert({
-              event_type: "live_close_failed", entity_type: "paper_trades", entity_id: trade.id,
-              message: `LIVE PARTIAL CLOSE FAILED: ${trade.symbol} — ${executionError}`,
-              metadata: { symbol: trade.symbol, quantity: partialQty, error: executionError },
-            });
+          const result = exitResult = await executeLiveExit(trade, partialQty);
+          if (result.error) {
+            await recordCloseFailure(trade, partialQty, result);
             continue;
           }
-          const closeSide = isLong ? "SELL" : "BUY";
-          const partialResult = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", partialQty, true);
-          partialOrderId = partialResult.orderId;
-          if (partialResult.error || !partialOrderId) {
-            const executionError = partialResult.error ?? "Exchange returned no partial-close order ID";
-            await supabase.from("paper_trades").update({ execution_error: executionError }).eq("id", trade.id);
-            await supabase.from("audit_log").insert({
-              event_type: "live_close_failed", entity_type: "paper_trades", entity_id: trade.id,
-              message: `LIVE PARTIAL CLOSE FAILED: ${trade.symbol} — ${executionError}`,
-              metadata: { symbol: trade.symbol, quantity: partialQty, error: executionError },
-            });
-            continue;
-          }
+          partialOrderId = result.orderId;
+          partialQty = result.executedQuantity!;
+          exitPrice = result.averagePrice!;
         }
-
-        await supabase.from("paper_trades").update({
-          partial_exit_price: target,
+        const newRemainingQty = remainingQty - partialQty;
+        const partialPnl = isLong ? (exitPrice - entry) * partialQty : (entry - exitPrice) * partialQty;
+        const { data: partialUpdated, error: partialUpdateError } = await persistExitUpdate(trade, {
+          partial_exit_price: exitPrice,
           partial_exit_at: new Date().toISOString(),
-          partial_exit_pnl: partialPnl,
+          partial_exit_pnl: Number(trade.partial_exit_pnl ?? 0) + partialPnl,
           remaining_quantity: newRemainingQty,
           execution_error: null,
-        }).eq("id", trade.id);
+        }, exitResult);
+        if (partialUpdateError || !partialUpdated) {
+          await recordCloseFailure(trade, partialQty, { ...exitResult, orderId: partialOrderId, error: `${RECONCILIATION_REQUIRED} partial exit executed but accounting update failed: ${partialUpdateError?.message ?? "position changed"}` });
+          throw new Error("Partial exit executed; accounting reconciliation required");
+        }
 
         // Credit partial profit to faction balance
-        const { data: faction } = await supabase
+        const { data: faction, error: factionReadError } = await supabase
           .from("factions")
           .select("paper_balance, profit_today, loss_today, trades_today, win_rate")
           .eq("id", trade.faction_id)
           .maybeSingle();
+        if (factionReadError) throw new Error(`Exit confirmed; faction accounting unavailable: ${factionReadError.message}`);
+        if (!faction) throw new Error("Exit confirmed; faction accounting row is missing");
 
         if (faction) {
-          const partialPositionValue = Number(trade.position_value) * 0.5;
+          const partialPositionValue = Number(trade.position_value) * (partialQty / Number(trade.quantity));
           const returnedCapital = isLive ? partialPositionValue + partialPnl : partialPositionValue + partialPnl;
-          await supabase.from("factions").update({
+          await checkedWrite(supabase.from("factions").update({
             paper_balance: isLive ? returnedCapital : Number(faction.paper_balance) + returnedCapital,
             profit_today: Number(faction.profit_today ?? 0) + (partialPnl > 0 ? partialPnl : 0),
             loss_today: Number(faction.loss_today ?? 0) + (partialPnl < 0 ? Math.abs(partialPnl) : 0),
             updated_at: new Date().toISOString(),
-          }).eq("id", trade.faction_id);
+          }).eq("id", trade.faction_id), "factions update");
         }
 
-        await supabase.from("audit_log").insert({
+        await checkedWrite(supabase.from("audit_log").insert({
           event_type: isLive ? "live_partial_close" : "paper_partial_close",
           entity_type: "paper_trades",
           entity_id: trade.id,
           message: `${isLive ? "LIVE" : "PAPER"}: ${trade.faction_id} partial close ${trade.side.toUpperCase()} on ${trade.symbol} — ${closeReason}. P&L: ${partialPnl >= 0 ? "+" : ""}${partialPnl.toFixed(4)}${partialOrderId ? ` [Order: ${partialOrderId}]` : ""}`,
           metadata: {
             faction_id: trade.faction_id, symbol: trade.symbol, side: trade.side,
-            strategy: trade.strategy, entry_price: entry, partial_exit_price: target,
+            strategy: trade.strategy, entry_price: entry, partial_exit_price: exitPrice,
             partial_pnl: partialPnl, partial_qty: partialQty, remaining_qty: newRemainingQty,
             reason: closeReason, is_live: isLive, binance_partial_order_id: partialOrderId,
           },
-        });
+        }), "audit_log insert");
 
         if (isLive) liveNetPnl += partialPnl;
-        closedCount++;
       } else {
         // ─── Full close (stop, trailing, time, or second TP hit) ───
-        const quantity = remainingQty;
-        const pnl = isLong ? (currentPrice - entry) * quantity : (entry - currentPrice) * quantity;
-        const partialPnl = Number(trade.partial_exit_pnl ?? 0);
-        const totalPnl = pnl + partialPnl;
-
+        let quantity = remainingQty;
+        let exitPrice = currentPrice;
         let closeOrderId: string | null = null;
+        let exitResult: ExchangeOrderResult | undefined;
         if (isLive) {
-          if (!trade.binance_order_id) {
-            const executionError = "Live close blocked: entry order ID is missing";
-            await supabase.from("paper_trades").update({ execution_error: executionError }).eq("id", trade.id);
-            await supabase.from("audit_log").insert({
-              event_type: "live_close_failed", entity_type: "paper_trades", entity_id: trade.id,
-              message: `LIVE CLOSE FAILED: ${trade.symbol} — ${executionError}`,
-              metadata: { symbol: trade.symbol, quantity, error: executionError },
-            });
+          const result = exitResult = await executeLiveExit(trade, quantity);
+          if (result.error) {
+            await recordCloseFailure(trade, quantity, result);
             continue;
           }
-          const closeSide = isLong ? "SELL" : "BUY";
-          const closeResult = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", quantity, true);
-          closeOrderId = closeResult.orderId;
-          if (closeResult.error || !closeOrderId) {
-            let executionError = closeResult.error ?? "Exchange returned no close order ID";
-            // Self-heal: an "insufficient balance" close is usually caused by tokens
-            // locked in stale open orders (e.g. a previous close placed a limit order
-            // that never filled). Cancel all open orders on the symbol to unlock the
-            // tokens, re-read the true free balance, and retry once.
-            if (/insufficient balance/i.test(executionError)) {
-              const cancelErr = await cancelOpenOrders(trade.symbol);
-              const base = (trade.symbol.match(/^(.*?)(USDT|BUSD|USDC)$/) ?? [])[1] ?? trade.symbol;
-              const free = await getLiveAssetFreeBalance(base);
-              // Binance returns -2011 "Unknown order sent" when there are no open
-              // orders to cancel — that is a success for our purposes.
-              const cancelOk = !cancelErr || /-2011|Unknown order/i.test(cancelErr);
-              if (!cancelOk) {
-                executionError = `Close failed: ${executionError}; cancel open orders also failed: ${cancelErr}`;
-              } else if (free < quantity * 0.99) {
-                // The tokens backing this position no longer exist on the exchange
-                // (sold outside the engine, withdrawn, or never delivered). The
-                // database record is stale bookkeeping. Reconcile: close the record
-                // with zero P&L and remove its book value from the tracked pool —
-                // never re-credit money the exchange does not hold.
-                const bookValue = Number(trade.position_value) * (remainingQty / Number(trade.quantity));
-                await supabase.from("paper_trades").update({
-                  status: "closed",
-                  exit_price: currentPrice,
-                  pnl: 0,
-                  closed_at: new Date().toISOString(),
-                  execution_error: `Reconciled: exchange holds 0 ${base}; record closed with 0 P&L, ${bookValue.toFixed(2)} book value removed from tracked capital`,
-                }).eq("id", trade.id);
-                await supabase.from("factions").update({
-                  open_positions: 0,
-                  paper_balance: 0,
-                  updated_at: new Date().toISOString(),
-                }).eq("id", trade.faction_id);
-                await supabase.from("audit_log").insert({
-                  event_type: "live_position_reconciled", entity_type: "paper_trades", entity_id: trade.id,
-                  message: `LIVE POSITION RECONCILED: ${trade.symbol} — exchange holds 0 ${base} (need ${quantity}). Record closed with 0 P&L; ${bookValue.toFixed(2)} book value removed from tracked capital.`,
-                  metadata: { symbol: trade.symbol, faction_id: trade.faction_id, quantity, book_value: bookValue },
-                });
-                closedCount++;
-                continue;
-              } else {
-                const retry = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", quantity, true);
-                closeOrderId = retry.orderId;
-                if (retry.error || !retry.orderId) {
-                  executionError = `Close failed: ${executionError}; retry after cancel also failed: ${retry.error ?? "no order ID"}`;
-                } else {
-                  executionError = "";
-                }
-              }
-            }
-            if (executionError) {
-              await supabase.from("paper_trades").update({ execution_error: executionError }).eq("id", trade.id);
-              await supabase.from("audit_log").insert({
-                event_type: "live_close_failed", entity_type: "paper_trades", entity_id: trade.id,
-                message: `LIVE CLOSE FAILED: ${trade.symbol} — ${executionError}`,
-                metadata: { symbol: trade.symbol, quantity, error: executionError },
-              });
-              continue;
-            }
-          }
+          closeOrderId = result.orderId;
+          quantity = result.executedQuantity!;
+          exitPrice = result.averagePrice!;
         }
-
-        await supabase.from("paper_trades").update({
+        const pnl = isLong ? (exitPrice - entry) * quantity : (entry - exitPrice) * quantity;
+        const partialPnl = Number(trade.partial_exit_pnl ?? 0);
+        const totalPnl = pnl + partialPnl;
+        const { data: closeUpdated, error: closeUpdateError } = await persistExitUpdate(trade, {
           status: "closed",
-          exit_price: currentPrice,
+          exit_price: exitPrice,
           pnl: totalPnl,
+          remaining_quantity: Math.max(0, remainingQty - quantity),
           closed_at: new Date().toISOString(),
           binance_close_order_id: closeOrderId,
           execution_error: null,
-        }).eq("id", trade.id);
+        }, exitResult);
+        if (closeUpdateError || !closeUpdated) {
+          await recordCloseFailure(trade, quantity, { ...exitResult, orderId: closeOrderId, error: `${RECONCILIATION_REQUIRED} exit executed but accounting update failed: ${closeUpdateError?.message ?? "position changed"}` });
+          throw new Error("Exit executed; accounting reconciliation required");
+        }
 
-        const { data: faction } = await supabase
+        const { data: faction, error: factionReadError } = await supabase
           .from("factions")
           .select("paper_balance, open_positions, profit_today, loss_today, trades_today, win_rate, consecutive_losses")
           .eq("id", trade.faction_id)
           .maybeSingle();
+        if (factionReadError) throw new Error(`Exit confirmed; faction accounting unavailable: ${factionReadError.message}`);
+        if (!faction) throw new Error("Exit confirmed; faction accounting row is missing");
 
         if (faction) {
           const remainingPositionValue = Number(trade.position_value) * (remainingQty / Number(trade.quantity));
@@ -1184,7 +1174,7 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
             : (Number(faction.win_rate ?? 0) * (newTrades - 1)) / newTrades;
           const newConsecLosses = !isWin ? (faction.consecutive_losses ?? 0) + 1 : 0;
 
-          await supabase.from("factions").update({
+          await checkedWrite(supabase.from("factions").update({
             paper_balance: returnedCapital,
             open_positions: Math.max(0, (faction.open_positions ?? 0) - 1),
             profit_today: Number(faction.profit_today ?? 0) + (pnl > 0 ? pnl : 0),
@@ -1193,26 +1183,26 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
             win_rate: Math.round(newWinRate * 100) / 100,
             consecutive_losses: newConsecLosses,
             updated_at: new Date().toISOString(),
-          }).eq("id", trade.faction_id);
+          }).eq("id", trade.faction_id), "factions update");
 
           if (totalPnl < 0) {
             totalLoss += Math.abs(totalPnl);
           }
         }
 
-        await supabase.from("audit_log").insert({
+        await checkedWrite(supabase.from("audit_log").insert({
           event_type: isLive ? "live_trade_close" : "paper_trade_close",
           entity_type: "paper_trades",
           entity_id: trade.id,
           message: `${isLive ? "LIVE" : "PAPER"}: ${trade.faction_id} closed ${trade.side.toUpperCase()} on ${trade.symbol} — ${closeReason}. P&L: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(4)}${closeOrderId ? ` [Order: ${closeOrderId}]` : ""}`,
           metadata: {
             faction_id: trade.faction_id, symbol: trade.symbol, side: trade.side,
-            strategy: trade.strategy, entry_price: entry, exit_price: currentPrice,
+            strategy: trade.strategy, entry_price: entry, exit_price: exitPrice,
             pnl: totalPnl, runner_pnl: pnl, partial_pnl: partialPnl,
             reason: closeReason, is_live: isLive, binance_close_order_id: closeOrderId,
             peak_price: newPeak,
           },
-        });
+        }), "audit_log insert");
 
         if (isLive) liveNetPnl += pnl;
         closedCount++;
@@ -1235,7 +1225,7 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
     if (liveNetPnl !== 0) {
       update.live_capital = config.liveCapital + liveNetPnl;
     }
-    await supabase.from("strategy_config").update(update).eq("id", 1);
+    await checkedWrite(supabase.from("strategy_config").update(update).eq("id", 1), "strategy_config update");
   }
 
   return { closed: closedCount, totalLoss };
@@ -1323,6 +1313,18 @@ Deno.serve(async (req: Request) => {
   try {
     const url = new URL(req.url);
     const path = url.pathname.replace("/binance-feed", "");
+
+    if (["/scan", "/kill-switch", "/close-all", "/sell-dust"].includes(path) && req.method !== "POST") {
+      return new Response(JSON.stringify({ error: "Use POST for trading controls" }), {
+        status: 405, headers: { ...corsHeaders, "Content-Type": "application/json", "Allow": "POST" },
+      });
+    }
+
+    if (["", "/", "/prices", "/indicators", "/config", "/dashboard-data", "/sprint-data", "/positions", "/account", "/intrusions"].includes(path) && req.method !== "GET") {
+      return new Response(JSON.stringify({ error: "Use GET for read-only endpoints" }), {
+        status: 405, headers: { ...corsHeaders, "Content-Type": "application/json", "Allow": "GET" },
+      });
+    }
 
     if (OPERATOR_ROUTES.has(path)) {
       const denied = await requireOperator(req, path);
@@ -1441,15 +1443,17 @@ Deno.serve(async (req: Request) => {
       windowStart.setUTCHours(0, 0, 0, 0);
       const windowEnd = new Date(windowStart.getTime() + 86_400_000);
       const isoStart = windowStart.toISOString();
-      const { data, error } = await supabase
+      const { data, error, count } = await supabase
         .from("paper_trades")
-        .select("id,faction_id,symbol,side,strategy,entry_price,exit_price,pnl,status,opened_at,closed_at,is_live,binance_order_id,binance_close_order_id,execution_error")
+        .select("*", { count: "exact" })
         .or(`status.eq.open,opened_at.gte.${isoStart},closed_at.gte.${isoStart}`)
         .order("opened_at", { ascending: false })
         .limit(100);
       if (error) throw new Error(`Sprint data unavailable: ${error.message}`);
       return new Response(JSON.stringify({
         trades: data ?? [],
+        totalCount: count,
+        truncated: count !== null && count > (data?.length ?? 0),
         windowStart: isoStart,
         windowEnd: windowEnd.toISOString(),
         refreshedAt: new Date().toISOString(),
@@ -1490,7 +1494,7 @@ Deno.serve(async (req: Request) => {
       if (!config.paperMode) {
         const liveBalance = await getLiveUsdtBalance();
         if (liveBalance !== config.liveCapital) {
-          await supabase.from("strategy_config").update({ live_capital: liveBalance }).eq("id", 1);
+          await checkedWrite(supabase.from("strategy_config").update({ live_capital: liveBalance }).eq("id", 1), "strategy_config update");
           config.liveCapital = liveBalance;
         }
       }
@@ -1541,7 +1545,7 @@ Deno.serve(async (req: Request) => {
             const candles = await fetchCandles(symbol, "1h", 100);
             return { symbol, candles, error: null as string | null };
           } catch (err) {
-            return { symbol, candles: [] as Candle[], error: err.message };
+            return { symbol, candles: [] as Candle[], error: err instanceof Error ? err.message : String(err) };
           }
         }),
       );
@@ -1680,7 +1684,7 @@ Deno.serve(async (req: Request) => {
             tradeId: result.tradeId, indicators: signal.indicators, skippedByWinRate: false,
           });
 
-          await supabase.from("market_data").insert({
+          await checkedWrite(supabase.from("market_data").insert({
             symbol, price: currentPrice,
             price_change_pct: candles[candles.length - 1].close > candles[candles.length - 2].close
               ? ((candles[candles.length - 1].close / candles[candles.length - 2].close - 1) * 100) : 0,
@@ -1692,7 +1696,7 @@ Deno.serve(async (req: Request) => {
             ema_12: signal.indicators.ema12, ema_26: signal.indicators.ema26,
             sma_20: signal.indicators.sma20, sma_50: signal.indicators.sma50,
             atr_14: signal.indicators.atr,
-          });
+          }), "market_data insert");
         }
       }
 
@@ -1729,10 +1733,10 @@ Deno.serve(async (req: Request) => {
           idempotency_key: `scan-${batchId}-${s.symbol}-${Date.now()}`,
         }));
         for (let i = 0; i < signalRows.length; i += 50) {
-          await supabase.from("signals").insert(signalRows.slice(i, i + 50));
+          await checkedWrite(supabase.from("signals").insert(signalRows.slice(i, i + 50)), "signals insert");
         }
 
-        await supabase.from("audit_log").insert({
+        await checkedWrite(supabase.from("audit_log").insert({
           event_type: "strategy_scan",
           entity_type: "signals",
           entity_id: batchId,
@@ -1743,7 +1747,7 @@ Deno.serve(async (req: Request) => {
             eligible_strategies: eligibleStrategies,
             win_rate_threshold: config.minWinRateThreshold,
           },
-        });
+        }), "audit_log insert");
       }
 
       return new Response(JSON.stringify({
@@ -1767,109 +1771,121 @@ Deno.serve(async (req: Request) => {
 
     // ─── GET /positions ───────────────────────────────────────────
     if (path === "/positions") {
-      const { data: openTrades } = await supabase
+      const { data: openTrades, error } = await supabase
         .from("paper_trades")
         .select("*")
         .eq("status", "open")
         .order("opened_at", { ascending: false });
-
-      const tickers = await fetchTickers(TRADING_PAIRS);
+      if (error) throw new Error(`Open positions unavailable: ${error.message}`);
+      if (!Array.isArray(openTrades)) throw new Error("Open positions response was invalid");
+      const symbols = [...new Set<string>((openTrades ?? []).map((trade) => trade.symbol))];
+      const quoteErrors: string[] = [];
+      let tickers: TickerData[] = [];
+      if (symbols.length > 0) {
+        try { tickers = await fetchTickers(symbols); }
+        catch (error) { quoteErrors.push(`Quotes unavailable: ${error instanceof Error ? error.message : String(error)}`); }
+      }
       const priceMap = new Map(tickers.map((t) => [t.symbol, t.price]));
-
-      const positionsWithPnL = (openTrades ?? []).map((trade) => {
-        const currentPrice = priceMap.get(trade.symbol) ?? Number(trade.entry_price);
-        const isLong = trade.side === "long";
-        const remainingQty = Number(trade.remaining_quantity ?? trade.quantity);
-        const unrealizedPnl = isLong
-          ? (currentPrice - Number(trade.entry_price)) * remainingQty
-          : (Number(trade.entry_price) - currentPrice) * remainingQty;
-        const partialPnl = Number(trade.partial_exit_pnl ?? 0);
-        const peakPrice = Number(trade.peak_price ?? trade.entry_price);
-        const peakPnl = isLong
-          ? (peakPrice - Number(trade.entry_price)) * remainingQty
-          : (Number(trade.entry_price) - peakPrice) * remainingQty;
-        return {
-          ...trade,
-          current_price: currentPrice,
-          unrealized_pnl: unrealizedPnl + partialPnl,
-          runner_pnl: unrealizedPnl,
-          partial_pnl: partialPnl,
-          pnl_pct: ((unrealizedPnl + partialPnl) / Number(trade.position_value)) * 100,
-          peak_price: peakPrice,
-          peak_pnl: peakPnl + partialPnl,
-          has_partial_exit: trade.partial_exit_price !== null,
-          remaining_quantity: remainingQty,
-        };
-      });
-
-      return new Response(JSON.stringify({ openPositions: positionsWithPnL, count: positionsWithPnL.length }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      const positionsWithPnL = (openTrades ?? []).map((trade) => valueOpenPosition(trade, priceMap.get(trade.symbol)));
+      const missingSymbols = positionsWithPnL.filter((trade) => !trade.price_available).map((trade) => trade.symbol);
+      if (missingSymbols.length > 0) quoteErrors.push(`No current price for ${[...new Set(missingSymbols)].join(", ")}`);
+      return new Response(JSON.stringify({ openPositions: positionsWithPnL, count: positionsWithPnL.length, quoteErrors, refreshedAt: new Date().toISOString() }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" },
       });
     }
 
     // ─── POST /close-all ───────────────────────────────────────────
     if (path === "/close-all") {
-      const config = await getStrategyConfig();
-      const tickers = await fetchTickers(TRADING_PAIRS);
-      const priceMap = new Map(tickers.map((t) => [t.symbol, t.price]));
-      const closeAllPriceData = new Map(tickers.map((t) => [t.symbol, { close: t.price, high: t.high, low: t.low }]));
-      const { closed } = await checkOpenPositions(priceMap, config, closeAllPriceData);
-
-      const { data: stillOpen } = await supabase.from("paper_trades").select("*").eq("status", "open");
-      let forceClosed = 0;
-
-      if (stillOpen) {
-        for (const trade of stillOpen) {
-          const currentPrice = priceMap.get(trade.symbol) ?? Number(trade.entry_price);
-          const isLong = trade.side === "long";
-          const remainingQty = Number(trade.remaining_quantity ?? trade.quantity);
-          const partialPnl = Number(trade.partial_exit_pnl ?? 0);
-          const pnl = (isLong ? (currentPrice - Number(trade.entry_price)) : (Number(trade.entry_price) - currentPrice)) * remainingQty + partialPnl;
-          const isLive = trade.is_live ?? false;
-
-          let closeOrderId: string | null = null;
-          if (isLive && trade.binance_order_id) {
-            const closeSide = isLong ? "SELL" : "BUY";
-            const closeResult = await placeBinanceOrder(trade.symbol, closeSide as "BUY" | "SELL", remainingQty, true);
-            closeOrderId = closeResult.orderId;
-          }
-
-          await supabase.from("paper_trades").update({
-            status: "closed", exit_price: currentPrice, pnl,
-            closed_at: new Date().toISOString(), binance_close_order_id: closeOrderId,
-          }).eq("id", trade.id);
-
-          const { data: faction } = await supabase
-            .from("factions")
-            .select("paper_balance, open_positions, profit_today, loss_today, trades_today, win_rate")
-            .eq("id", trade.faction_id)
-            .maybeSingle();
-
-          if (faction) {
-            const remainingPositionValue = Number(trade.position_value) * (remainingQty / Number(trade.quantity));
-            const returnedCapital = isLive ? remainingPositionValue + (pnl - partialPnl) : Number(faction.paper_balance) + remainingPositionValue + (pnl - partialPnl);
-            await supabase.from("factions").update({
-              paper_balance: returnedCapital,
-              open_positions: Math.max(0, (faction.open_positions ?? 0) - 1),
-              profit_today: Number(faction.profit_today ?? 0) + (pnl > 0 ? pnl : 0),
-              loss_today: Number(faction.loss_today ?? 0) + (pnl < 0 ? Math.abs(pnl) : 0),
-              trades_today: (faction.trades_today ?? 0) + 1,
-              updated_at: new Date().toISOString(),
-            }).eq("id", trade.faction_id);
-          }
-          forceClosed++;
-        }
+      const { data: stillOpen, error: readError } = await supabase.from("paper_trades").select("*").eq("status", "open");
+      if (readError) throw new Error(`Open positions unavailable: ${readError.message}`);
+      if (!Array.isArray(stillOpen)) throw new Error("Open positions response was invalid");
+      const paperSymbols = [...new Set<string>((stillOpen ?? []).filter((trade) => !trade.is_live).map((trade) => trade.symbol))];
+      let tickers: TickerData[] = [];
+      if (paperSymbols.length > 0) {
+        try { tickers = await fetchTickers(paperSymbols); } catch { /* Each paper close reports its missing price below. */ }
       }
+      const priceMap = new Map(tickers.map((ticker) => [ticker.symbol, ticker.price]));
+      let forceClosed = 0;
+      const failures: Array<{ tradeId: string; symbol: string; error: string }> = [];
 
-      await supabase.from("audit_log").insert({
-        event_type: "emergency_close_all",
-        entity_type: "paper_trades",
-        entity_id: "system",
-        message: `Emergency close all — ${closed} closed by SL/TP, ${forceClosed} force-closed`,
-        metadata: { closed_by_rules: closed, force_closed: forceClosed },
+      for (const trade of stillOpen ?? []) {
+        const isLive = trade.is_live === true;
+        const remainingQty = Number(trade.remaining_quantity ?? trade.quantity);
+        let exitPrice = priceMap.get(trade.symbol);
+        let closeOrderId: string | null = null;
+        let executedQty = remainingQty;
+        let failure: string | null = null;
+        let result: ExchangeOrderResult = { orderId: null, error: null };
+        if (isLive) {
+          result = await executeLiveExit(trade, remainingQty);
+          failure = result.error;
+          closeOrderId = result.orderId;
+          exitPrice = result.averagePrice;
+          executedQty = result.executedQuantity ?? 0;
+        } else if (!exitPrice || !Number.isFinite(exitPrice)) {
+          failure = `No current price for ${trade.symbol}; paper position remains open`;
+        }
+        if (failure) {
+          await recordCloseFailure(trade, remainingQty, { ...result, error: failure });
+          failures.push({ tradeId: trade.id, symbol: trade.symbol, error: failure });
+          continue;
+        }
+        const partialPnl = Number(trade.partial_exit_pnl ?? 0);
+        const runnerPnl = (trade.side === "long" ? exitPrice! - Number(trade.entry_price) : Number(trade.entry_price) - exitPrice!) * executedQty;
+        const pnl = runnerPnl + partialPnl;
+        const { data: closeUpdated, error: updateError } = await persistExitUpdate(trade, {
+          status: "closed", exit_price: exitPrice, pnl,
+          remaining_quantity: Math.max(0, remainingQty - executedQty),
+          closed_at: new Date().toISOString(), binance_close_order_id: closeOrderId,
+          execution_error: null,
+        }, result);
+        if (updateError || !closeUpdated) {
+          const detail = `${RECONCILIATION_REQUIRED} close ${closeOrderId ?? "paper"} completed but accounting update failed: ${updateError?.message ?? "position changed"}`;
+          await recordCloseFailure(trade, remainingQty, { ...result, orderId: closeOrderId, error: detail });
+          failures.push({ tradeId: trade.id, symbol: trade.symbol, error: detail });
+          continue;
+        }
+        forceClosed++;
+        const { data: faction, error: factionReadError } = await supabase
+          .from("factions")
+          .select("paper_balance, open_positions, profit_today, loss_today, trades_today, win_rate")
+          .eq("id", trade.faction_id)
+          .maybeSingle();
+        if (factionReadError) throw new Error(`Close confirmed; faction accounting unavailable: ${factionReadError.message}`);
+        if (!faction) throw new Error("Close confirmed; faction accounting row is missing");
+        if (faction) {
+          const remainingPositionValue = Number(trade.position_value) * (executedQty / Number(trade.quantity));
+          const returnedCapital = isLive ? remainingPositionValue + runnerPnl : Number(faction.paper_balance) + remainingPositionValue + runnerPnl;
+          const { error: factionUpdateError } = await supabase.from("factions").update({
+            paper_balance: returnedCapital,
+            open_positions: Math.max(0, (faction.open_positions ?? 0) - 1),
+            // Prior partial P&L was already credited when that fill occurred.
+            profit_today: Number(faction.profit_today ?? 0) + Math.max(0, runnerPnl),
+            loss_today: Number(faction.loss_today ?? 0) + Math.max(0, -runnerPnl),
+            trades_today: (faction.trades_today ?? 0) + 1,
+            updated_at: new Date().toISOString(),
+          }).eq("id", trade.faction_id);
+          if (factionUpdateError) throw new Error(`Close confirmed; faction accounting update failed: ${factionUpdateError.message}`);
+        }
+        const { error: auditError } = await supabase.from("audit_log").insert({
+          event_type: isLive ? "live_trade_close" : "paper_trade_close",
+          entity_type: "paper_trades", entity_id: trade.id,
+          message: `${isLive ? "LIVE" : "PAPER"}: ${trade.symbol} closed by emergency request${closeOrderId ? ` [Order: ${closeOrderId}]` : ""}`,
+          metadata: { symbol: trade.symbol, is_live: isLive, exit_price: exitPrice, quantity: executedQty, pnl, binance_close_order_id: closeOrderId },
+        });
+        if (auditError) throw new Error(`Close confirmed; audit write failed: ${auditError.message}`);
+      }
+      const { count: remainingOpen, error: countError } = await supabase.from("paper_trades").select("id", { count: "exact", head: true }).eq("status", "open");
+      if (countError) throw new Error(`Remaining positions unavailable: ${countError.message}`);
+      if (!Number.isInteger(remainingOpen) || remainingOpen === null || remainingOpen < 0) throw new Error("Remaining position count was unavailable");
+      const summary = { closedByRules: 0, forceClosed, total: forceClosed, failed: failures.length, remainingOpen, failures, complete: failures.length === 0 && remainingOpen === 0 };
+      const { error: auditError } = await supabase.from("audit_log").insert({
+        event_type: "emergency_close_all", entity_type: "paper_trades", entity_id: "system",
+        message: `Emergency close all — ${forceClosed} confirmed closed, ${failures.length} failed, ${remainingOpen} remain open`,
+        metadata: summary,
       });
-
-      return new Response(JSON.stringify({ closedByRules: closed, forceClosed, total: closed + forceClosed }), {
+      if (auditError) throw new Error(`Close summary could not be recorded: ${auditError.message}`);
+      return new Response(JSON.stringify(summary), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -1956,13 +1972,13 @@ Deno.serve(async (req: Request) => {
 
           sold.push({ asset: b.asset, qty, usdtValue, orderId: result.orderId, error: result.error });
 
-          await supabase.from("audit_log").insert({
+          await checkedWrite(supabase.from("audit_log").insert({
             event_type: "dust_conversion",
             entity_type: "binance",
             entity_id: result.orderId ?? "failed",
             message: `Sold ${qty} ${b.asset} for USDT${result.error ? ` — ERROR: ${result.error}` : ""}`,
             metadata: { asset: b.asset, qty, usdt_value: usdtValue, order_id: result.orderId, error: result.error },
-          });
+          }), "audit_log insert");
         }
 
         return new Response(JSON.stringify({ sold, count: sold.length }), {
@@ -1980,7 +1996,7 @@ Deno.serve(async (req: Request) => {
     });
   } catch (err) {
     console.error("binance-feed error:", err);
-    return new Response(JSON.stringify({ error: err.message }), {
+    return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }

@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { TrendingUp, TrendingDown, Zap, Brain, Target, Shield, X, RefreshCw, AlertCircle, Power, Activity, DollarSign } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { FACTIONS } from '@/lib/constants';
 import { fetchOpenPositions, closeAllPositions } from '@/lib/engine';
 import { operatorFetch } from '@/lib/operatorAuth';
 import type { OpenPosition, PaperTrade } from '@/lib/types';
+import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
+import { describeClosePositions, positionUnrealizedPnl, totalPositionPnl } from '@/lib/tradingStatus';
 
 const strategyStyles: Record<string, { color: string; bg: string; label: string }> = {
   rsi_oversold: { color: 'text-emerald-400', bg: 'bg-emerald-500/15', label: 'RSI Oversold' },
@@ -61,6 +63,9 @@ export default function PaperTradingPanel() {
   const [history, setHistory] = useState<PaperTrade[]>([]);
   const [config, setConfig] = useState<TradingConfig | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [loaded, setLoaded] = useState(false);
   const [closing, setClosing] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [confirmLive, setConfirmLive] = useState(false);
@@ -70,59 +75,55 @@ export default function PaperTradingPanel() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const [pos, hist, cfg] = await Promise.all([
-      fetchOpenPositions(),
-      supabase.from('paper_trades').select('*').eq('is_live', true).eq('status', 'closed').order('closed_at', { ascending: false }).limit(20),
-      fetchConfig(),
-    ]);
-    setPositions(pos);
-    setHistory(hist.data ?? []);
-    setConfig(cfg);
-    setLoading(false);
+    try {
+      const [pos, hist, cfg] = await Promise.all([
+        fetchOpenPositions(),
+        supabase.from('paper_trades').select('*').eq('is_live', true).eq('status', 'closed').order('closed_at', { ascending: false }).limit(20),
+        fetchConfig(),
+      ]);
+      if (hist.error) throw new Error(hist.error.message);
+      if (!cfg) throw new Error('Trading configuration is unavailable.');
+      setPositions(pos); setHistory(hist.data ?? []); setConfig(cfg); setLoaded(true); setError('');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Trading data is unavailable.'); }
+    finally { setLoading(false); }
   }, []);
 
-  useEffect(() => {
-    fetchData();
-    const id = setInterval(fetchData, 5000);
-    return () => clearInterval(id);
-  }, [fetchData]);
+  useVisibilityPolling(fetchData, 10_000);
 
-  const totalUnrealizedPnl = positions.reduce((s, p) => s + p.unrealized_pnl, 0);
+  const totalUnrealizedPnl = loaded && !error ? totalPositionPnl(positions) : null;
   const totalRealizedPnl = history.reduce((s, t) => s + Number(t.pnl), 0);
   const wins = history.filter(t => Number(t.pnl) >= 0).length;
   const losses = history.filter(t => Number(t.pnl) < 0).length;
   const winRate = history.length > 0 ? (wins / history.length) * 100 : 0;
 
   async function handleCloseAll() {
-    setClosing(true);
-    setConfirmClose(false);
-    await closeAllPositions();
-    await fetchData();
-    setClosing(false);
+    setClosing(true); setConfirmClose(false); setNotice('');
+    try { setNotice(describeClosePositions(await closeAllPositions())); }
+    catch (cause) { setNotice(cause instanceof Error ? cause.message : 'Close status could not be confirmed.'); }
+    finally { await fetchData(); setClosing(false); }
   }
 
   async function handleToggleMode() {
-    setTogglingMode(true);
-    setConfirmLive(false);
-    const success = await togglePaperMode(false);
-    if (success) await fetchData();
-    setTogglingMode(false);
+    setTogglingMode(true); setConfirmLive(false);
+    try {
+      if (!await togglePaperMode(false)) throw new Error('Trading mode could not be changed.');
+      setNotice('Live trading enabled.');
+    } catch (cause) { setNotice(cause instanceof Error ? cause.message : 'Trading mode could not be changed.'); }
+    finally { await fetchData(); setTogglingMode(false); }
   }
 
-  async function handleKillSwitch() {
-    setTogglingKill(true);
-    setConfirmKill(false);
-    await toggleKillSwitch('trip');
-    await fetchData();
-    setTogglingKill(false);
+  async function changeKillSwitch(action: 'trip' | 'reset') {
+    setTogglingKill(true); setConfirmKill(false);
+    try {
+      if (!await toggleKillSwitch(action)) throw new Error('Kill switch status could not be confirmed.');
+      setNotice(action === 'trip' ? 'Kill switch activated. Verify remaining positions.' : 'Kill switch reset. Automated trading may resume.');
+    } catch (cause) { setNotice(cause instanceof Error ? cause.message : 'Kill switch status could not be confirmed.'); }
+    finally { await fetchData(); setTogglingKill(false); }
   }
-
-  async function handleResetKillSwitch() {
-    setTogglingKill(true);
-    await toggleKillSwitch('reset');
-    await fetchData();
-    setTogglingKill(false);
-  }
+  const handleKillSwitch = () => changeKillSwitch('trip');
+  const handleResetKillSwitch = () => {
+    if (window.confirm('Reset the kill switch and allow automated trading to resume?')) void changeKillSwitch('reset');
+  };
 
   const isLive = config?.paperMode === false;
   const killActive = config?.killSwitch === true;
@@ -132,12 +133,14 @@ export default function PaperTradingPanel() {
 
   return (
     <section>
+      {error && <div role="alert" className="mb-4 rounded-lg border border-amber-500/30 p-4 text-sm text-amber-300">Data unavailable or stale: {error}</div>}
+      {notice && <div role="status" className="mb-4 rounded-lg border border-cyan-500/30 p-4 text-sm text-cyan-300">{notice}</div>}
       <div className="mb-4 flex items-center gap-2">
         <Zap className="h-5 w-5 text-cyan-400" />
         <h2 className="text-base font-semibold text-zinc-200">Trading Desk</h2>
         <span className={`ml-auto flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold ${isLive ? 'bg-red-500/15 text-red-400' : 'bg-cyan-500/15 text-cyan-400'}`}>
           <span className={`h-1.5 w-1.5 rounded-full ${isLive ? 'bg-red-500' : 'bg-cyan-500'} animate-pulse`} />
-          {isLive ? 'LIVE MODE' : 'PAPER MODE'}
+          {!loaded || error ? 'MODE UNAVAILABLE' : isLive ? 'LIVE MODE' : 'PAPER MODE'}
         </span>
       </div>
 
@@ -178,14 +181,14 @@ export default function PaperTradingPanel() {
           ) : (
             confirmLive ? (
               <div className="space-y-2">
-                <p className="text-[11px] font-semibold text-red-400">Switch to LIVE with $5?</p>
+                <p className="text-[11px] font-semibold text-red-400">Enable real exchange orders with the current risk limits?</p>
                 <div className="flex items-center gap-1.5">
                   <button
                     onClick={handleToggleMode}
                     disabled={togglingMode}
                     className="rounded-lg bg-red-600 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-red-500 disabled:opacity-50"
                   >
-                    {togglingMode ? 'Switching…' : 'Go Live ($5)'}
+                    {togglingMode ? 'Switching…' : 'Enable live trading'}
                   </button>
                   <button
                     onClick={() => setConfirmLive(false)}
@@ -197,6 +200,7 @@ export default function PaperTradingPanel() {
               </div>
             ) : (
               <button
+                disabled={!loaded || !!error}
                 onClick={() => setConfirmLive(true)}
                 className="w-full rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] font-semibold text-red-400 transition-colors hover:bg-red-500/20"
               >
@@ -294,24 +298,24 @@ export default function PaperTradingPanel() {
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
           <p className="text-[11px] uppercase text-zinc-600">Open Positions</p>
-          <p className="mt-1 font-mono text-lg font-bold tabular-nums text-zinc-200">{positions.length}</p>
+          <p className="mt-1 font-mono text-lg font-bold tabular-nums text-zinc-200">{loaded && !error ? positions.length : '—'}</p>
         </div>
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
           <p className="text-[11px] uppercase text-zinc-600">Unrealized P&L</p>
-          <p className={`mt-1 font-mono text-lg font-bold tabular-nums ${totalUnrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-            {totalUnrealizedPnl >= 0 ? '+' : ''}{totalUnrealizedPnl.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+          <p className={`mt-1 font-mono text-lg font-bold tabular-nums ${(totalUnrealizedPnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {totalUnrealizedPnl === null ? '—' : `${totalUnrealizedPnl >= 0 ? '+' : ''}${totalUnrealizedPnl.toLocaleString('en-US', { maximumFractionDigits: 2 })}`}
           </p>
         </div>
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-          <p className="text-[11px] uppercase text-zinc-600">Realized P&L</p>
+          <p className="text-[11px] uppercase text-zinc-600">Recorded P&amp;L · latest 20</p>
           <p className={`mt-1 font-mono text-lg font-bold tabular-nums ${totalRealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-            {totalRealizedPnl >= 0 ? '+' : ''}{totalRealizedPnl.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+            {loaded && !error ? `${totalRealizedPnl >= 0 ? '+' : ''}${totalRealizedPnl.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : '—'}
           </p>
         </div>
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
           <p className="text-[11px] uppercase text-zinc-600">Win Rate</p>
           <p className="mt-1 font-mono text-lg font-bold tabular-nums text-zinc-200">
-            {winRate.toFixed(1)}%
+            {loaded && !error ? `${winRate.toFixed(1)}%` : '—'}
             <span className="ml-1 text-[10px] text-zinc-600">({wins}W / {losses}L)</span>
           </p>
         </div>
@@ -361,17 +365,19 @@ export default function PaperTradingPanel() {
         </div>
 
         {positions.length === 0 ? (
-          <p className="py-6 text-center text-xs text-zinc-600">No open positions. Run a strategy scan to open trades.</p>
+          <p className="py-6 text-center text-xs text-zinc-600">{!loaded || error ? 'Open positions could not be confirmed.' : 'No open positions recorded. Check exchange holdings in Live Execution.'}</p>
         ) : (
           <div className="space-y-2 max-h-80 overflow-y-auto">
             {positions.map(p => {
               const meta = FACTIONS.find(f => f.id === p.faction_id);
               const style = strategyStyles[p.strategy] ?? { color: 'text-zinc-400', bg: 'bg-zinc-700/40', label: p.strategy };
               const isLong = p.side === 'long';
-              const pnlPositive = p.unrealized_pnl >= 0;
-              const pnlPct = p.pnl_pct ?? 0;
+              const pnl = positionUnrealizedPnl(p);
+              const pnlPositive = pnl !== null && pnl >= 0;
+              const pnlPct = p.current_price !== null && Number(p.entry_price) > 0
+                ? ((p.current_price - Number(p.entry_price)) / Number(p.entry_price)) * 100 * (isLong ? 1 : -1) : null;
               const entry = Number(p.entry_price);
-              const current = p.current_price ?? entry;
+              const current = p.current_price;
               const stop = Number(p.stop_loss);
               const target = Number(p.take_profit);
               const liveTrade = (p as OpenPosition & { is_live?: boolean }).is_live;
@@ -396,14 +402,14 @@ export default function PaperTradingPanel() {
                     <span className="font-mono text-xs font-semibold text-zinc-300">{p.symbol}</span>
                     <span className="text-[10px] text-zinc-500">{meta?.name ?? p.faction_id}</span>
                     <span className={`ml-auto font-mono text-xs font-bold tabular-nums ${pnlPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {pnlPositive ? '+' : ''}{p.unrealized_pnl.toLocaleString('en-US', { maximumFractionDigits: 4 })}
-                      <span className="ml-1 text-[10px] text-zinc-600">({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%)</span>
+                      {pnl === null ? 'Quote unavailable' : `${pnlPositive ? '+' : ''}${pnl.toLocaleString('en-US', { maximumFractionDigits: 4 })}`}
+                      <span className="ml-1 text-[10px] text-zinc-600">{pnlPct === null ? '—' : `(${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`}</span>
                     </span>
                   </div>
 
                   <div className="flex items-center gap-4 text-[10px] text-zinc-600">
                     <span>Entry: <span className="font-mono tabular-nums text-zinc-400">${entry.toFixed(4)}</span></span>
-                    <span>Current: <span className="font-mono tabular-nums text-zinc-400">${current.toFixed(4)}</span></span>
+                    <span>Current: <span className="font-mono tabular-nums text-zinc-400">{current === null ? '—' : `$${current.toFixed(4)}`}</span></span>
                     <span className="flex items-center gap-0.5">
                       <Shield className="h-2.5 w-2.5 text-red-400/60" />
                       SL: <span className="font-mono tabular-nums text-red-400/70">${stop.toFixed(4)}</span>

@@ -45,6 +45,7 @@ function formatTime(ms: number) {
 
 function PnlCell({ order }: { order: ExecutionOrder }) {
   if (!order.pnl) return <span className="text-zinc-600">{order.side === 'BUY' ? 'Entry' : '-'}</span>;
+  if (!order.pnl.complete) return <span className="text-xs text-amber-400" title="Missing cost basis, fee valuation, or earlier fill history">Unverified</span>;
   const value = order.pnl.realizedPnl;
   const tone = value > 0 ? 'text-emerald-400' : value < 0 ? 'text-red-400' : 'text-zinc-300';
   const sign = value > 0 ? '+' : value < 0 ? '-' : '';
@@ -59,9 +60,11 @@ function PnlCell({ order }: { order: ExecutionOrder }) {
 interface Props {
   orders: ExecutionOrder[];
   loading: boolean;
+  available?: boolean;
+  partial?: boolean;
 }
 
-export default function ExecutionOrdersTable({ orders, loading }: Props) {
+export default function ExecutionOrdersTable({ orders, loading, available = true, partial = false }: Props) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<StatusGroup>('all');
   const [sortKey, setSortKey] = useState<SortKey>('time');
@@ -84,6 +87,7 @@ export default function ExecutionOrdersTable({ orders, loading }: Props) {
             <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
             <input
               type="search"
+              aria-label="Search execution orders"
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search coin, faction, status…"
@@ -126,7 +130,7 @@ export default function ExecutionOrdersTable({ orders, loading }: Props) {
 
       {rows.length === 0 ? (
         <p className="px-5 py-10 text-center text-sm text-zinc-500">
-          {loading ? 'Loading orders…' : orders.length === 0 ? 'No orders found on the exchange for these coins.' : 'No orders match your search or filter.'}
+          {loading ? 'Loading orders…' : !available ? 'Order history is unavailable.' : orders.length === 0 ? (partial ? 'No orders loaded. Some requested pairs could not be verified.' : 'No orders in the fetched history for these pairs.') : 'No orders match your search or filter.'}
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -170,7 +174,7 @@ export default function ExecutionOrdersTable({ orders, loading }: Props) {
       )}
       {rows.some(o => o.pnl && !o.pnl.complete) ? (
         <p className="border-t border-zinc-800 px-5 py-3 text-[11px] text-zinc-500">
-          * Some sells matched buys older than the fetched history, so their profit may be incomplete.
+          Unverified P&L is hidden and excluded from totals because cost basis, fee valuation, or earlier fill history is missing.
         </p>
       ) : null}
     </div>

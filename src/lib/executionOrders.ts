@@ -1,5 +1,5 @@
-import type { BinanceOrder, BinanceTrade, OrderPnl, SymbolHistory } from '@/lib/tradePnl';
-import { computeRealizedPnl } from '@/lib/tradePnl';
+import type { BinanceOrder, BinanceTrade, OrderPnl, SymbolHistory } from './tradePnl.ts';
+import { computeRealizedPnl } from './tradePnl.ts';
 
 export interface ExecutionOrder {
   orderId: number;
@@ -37,22 +37,25 @@ export const STATUS_GROUP_LABELS: Record<StatusGroup, string> = {
 export function statusGroup(status: string): Exclude<StatusGroup, 'all'> {
   if (status === 'FILLED') return 'filled';
   if (status === 'PARTIALLY_FILLED') return 'partial';
-  if (status === 'NEW') return 'open';
+  if (status === 'NEW' || status === 'PENDING_CANCEL') return 'open';
   if (status === 'REJECTED') return 'rejected';
   return 'canceled';
 }
 
 export function buildExecutionOrders(
   histories: SymbolHistory[],
-  factionByOrderId: Map<number, string>,
+  factionByOrderId: Map<string, string>,
 ): ExecutionOrder[] {
   return histories.flatMap(history => {
     const pnlByOrder = computeRealizedPnl(history.symbol, history.trades as BinanceTrade[]);
+    if (history.tradesMayBeTruncated) {
+      for (const pnl of pnlByOrder.values()) pnl.complete = false;
+    }
     return history.orders.map((order: BinanceOrder): ExecutionOrder => ({
       orderId: order.orderId,
       symbol: history.symbol,
       coin: history.symbol.slice(0, -4),
-      faction: factionByOrderId.get(order.orderId) ?? null,
+      faction: factionByOrderId.get(`${history.symbol}:${order.orderId}`) ?? null,
       side: order.side,
       status: order.status,
       time: order.time,
@@ -77,7 +80,7 @@ export function filterAndSortOrders(orders: ExecutionOrder[], filter: OrderFilte
       case 'coin': return o.coin;
       case 'faction': return o.faction ?? '';
       case 'status': return o.status;
-      case 'pnl': return o.pnl?.realizedPnl ?? Number.NEGATIVE_INFINITY;
+      case 'pnl': return o.pnl?.complete ? o.pnl.realizedPnl : Number.NEGATIVE_INFINITY;
       default: return o.time;
     }
   };

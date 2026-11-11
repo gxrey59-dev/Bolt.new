@@ -2,6 +2,7 @@ import { supabase } from './supabase';
 import { operatorFetch } from './operatorAuth';
 import { FACTION_LOSS_THRESHOLD, GLOBAL_LOSS_THRESHOLD } from './constants';
 import type { Faction, OpenPosition } from './types';
+import { readTradingResponse, parseClosePositionsResult, type ClosePositionsResult } from './tradingStatus';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -14,26 +15,23 @@ export async function runStrategyScan(): Promise<{
   signals: number;
   tradesOpened: number;
   tradesClosed: number;
-} | null> {
-  try {
-    const res = await operatorFetch('binance-feed/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res.ok) {
-      console.error('Strategy scan failed:', res.status);
-      return null;
-    }
-    const data = await res.json();
-    return {
-      signals: data.signals ?? 0,
-      tradesOpened: data.tradesOpened ?? 0,
-      tradesClosed: data.tradesClosed ?? 0,
-    };
-  } catch (err) {
-    console.error('Strategy scan error:', err);
-    return null;
+  mode?: string;
+}> {
+  const res = await operatorFetch('binance-feed/scan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const data = await readTradingResponse(res);
+  if (data.killSwitchTripped) throw new Error('Trading is halted by the kill switch. Review the trading controls.');
+  if (![data.signals, data.tradesOpened, data.tradesClosed].every(value => Number.isSafeInteger(value) && Number(value) >= 0)) {
+    throw new Error(typeof data.reason === 'string' ? data.reason : 'The scan returned without execution counts. Check its status before retrying.');
   }
+  return {
+    signals: Number(data.signals),
+    tradesOpened: Number(data.tradesOpened),
+    tradesClosed: Number(data.tradesClosed),
+    mode: typeof data.mode === 'string' ? data.mode : undefined,
+  };
 }
 
 // ─── Live Price Fetch ──────────────────────────────────────────────
@@ -41,60 +39,42 @@ export async function runStrategyScan(): Promise<{
 export async function fetchLivePrices(): Promise<
   Array<{ symbol: string; price: number; change: number; volume: number; high: number; low: number }>
 > {
-  try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-feed/prices`, {
-      headers: {
-        Authorization: `Bearer ${ANON_KEY}`,
-        apikey: ANON_KEY,
-      },
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.tickers ?? []).map((t: { symbol: string; price: number; priceChangePercent: number; volume: number; high: number; low: number }) => ({
-      symbol: t.symbol,
-      price: t.price,
-      change: t.priceChangePercent,
-      volume: t.volume,
-      high: t.high,
-      low: t.low,
-    }));
-  } catch {
-    return [];
-  }
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-feed/prices`, {
+    headers: { Authorization: `Bearer ${ANON_KEY}`, apikey: ANON_KEY },
+    signal: AbortSignal.timeout(15000),
+  });
+  const data = await readTradingResponse(res);
+  if (!Array.isArray(data.tickers) || data.tickers.length === 0) throw new Error('Live market prices are unavailable.');
+  return data.tickers.map((ticker: Record<string, unknown>) => {
+    const price = Number(ticker.price);
+    const change = Number(ticker.priceChangePercent);
+    if (typeof ticker.symbol !== 'string' || !Number.isFinite(price) || price <= 0 || !Number.isFinite(change)) {
+      throw new Error('Live market data contains an invalid quote.');
+    }
+    return { symbol: ticker.symbol, price, change, volume: Number(ticker.volume), high: Number(ticker.high), low: Number(ticker.low) };
+  });
 }
 
 // ─── Open Positions ────────────────────────────────────────────────
 
 export async function fetchOpenPositions(): Promise<OpenPosition[]> {
-  try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-feed/positions`, {
-      headers: {
-        Authorization: `Bearer ${ANON_KEY}`,
-        apikey: ANON_KEY,
-      },
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.openPositions ?? []).filter((p: OpenPosition) => p.is_live === true);
-  } catch {
-    return [];
-  }
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/binance-feed/positions`, {
+    headers: { Authorization: `Bearer ${ANON_KEY}`, apikey: ANON_KEY },
+    signal: AbortSignal.timeout(15000),
+  });
+  const data = await readTradingResponse(res);
+  if (!Array.isArray(data.openPositions)) throw new Error('Open position data is unavailable.');
+  return data.openPositions.filter((position: OpenPosition) => position.is_live === true);
 }
 
 // ─── Emergency Close All ───────────────────────────────────────────
 
-export async function closeAllPositions(): Promise<number> {
-  try {
-    const res = await operatorFetch('binance-feed/close-all', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res.ok) return 0;
-    const data = await res.json();
-    return data.total ?? 0;
-  } catch {
-    return 0;
-  }
+export async function closeAllPositions(): Promise<ClosePositionsResult> {
+  const res = await operatorFetch('binance-feed/close-all', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  return parseClosePositionsResult(await readTradingResponse(res));
 }
 
 // ─── Faction Profit Update (from closed paper trades) ──────────────

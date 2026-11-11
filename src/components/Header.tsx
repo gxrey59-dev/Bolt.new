@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Crown, Activity, Wallet } from 'lucide-react';
 import type { Faction, Sweep } from '@/lib/types';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
@@ -13,7 +13,7 @@ export default function Header(props: Props) {
   useEffect(() => {
     return () => controllerRef.current?.abort();
   }, []);
-  async function load() {
+  const load = useCallback(async () => {
       if (!operator) {
         setBalance(null); setError('Operator sign-in required to view the exchange balance.');
         return;
@@ -30,23 +30,26 @@ export default function Header(props: Props) {
         const asset = data.balances.find((item: { asset: string }) => item.asset === 'USDT');
         const value = asset ? Number(asset.free) + Number(asset.locked) : 0;
         if (!Number.isFinite(value) || value < 0) throw new Error('Invalid account balance.');
-        setBalance(value); setError('');
+        if (controllerRef.current === controller && !controller.signal.aborted) { setBalance(value); setError(''); }
       } catch (cause) {
-        if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
+        if (controllerRef.current === controller) {
           setBalance(null); setError(cause instanceof Error ? cause.message : 'Account connection unavailable.');
         }
       } finally {
         clearTimeout(timeout);
       }
-  }
-  useVisibilityPolling(load, 30_000);
+  }, [operator]);
+  useEffect(() => {
+    if (!operator) { controllerRef.current?.abort(); controllerRef.current = undefined; setBalance(null); setError('Sign in to view the exchange balance.'); }
+  }, [operator]);
+  useVisibilityPolling(load, 30_000, operator);
   return <header className="sticky top-0 z-50 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-xl">
     <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4 px-6 py-4">
       <div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10 text-amber-400"><Crown className="h-5 w-5" /></div><div><h1 className="text-lg font-bold tracking-tight text-zinc-100">Wu-Tang Financial Weapon</h1><p className="text-xs text-zinc-500">Command Center</p></div></div>
       <div className="flex flex-wrap items-center gap-4">
         <div title={error || 'Actual free plus locked USDT from Binance.US. Other assets are not included.'} className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2"><Wallet className="h-4 w-4 text-amber-400" /><span className="font-mono text-sm font-semibold text-amber-400">{balance === null ? '—' : balance.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span><span className="text-[10px] text-cyan-400">USDT</span></div>
-        <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2"><Activity className="h-4 w-4 text-cyan-400" /><span className="text-xs text-zinc-300">{balance === null ? 'Account unavailable' : 'Exchange connected'}</span></div>
-        <span className="text-xs text-zinc-500">Worker status unverified</span>
+        <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2"><Activity className="h-4 w-4 text-cyan-400" /><span className="text-xs text-zinc-300">{!operator ? 'Viewer access' : balance === null ? 'Account unavailable' : 'Exchange connected'}</span></div>
+        <a href="#overview" className="text-xs text-cyan-400 hover:text-cyan-200">Service overview</a>
       </div>
     </div>
   </header>;

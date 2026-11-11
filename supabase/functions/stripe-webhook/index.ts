@@ -1,223 +1,121 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
-import Stripe from 'npm:stripe@17.7.0';
+import Stripe from 'npm:stripe@23.0.0';
 import { createClient } from 'npm:@supabase/supabase-js@2.49.1';
+import { isPaidCheckout, objectId } from './policy.ts';
 
-const stripeSecret = Deno.env.get('STRIPE_SECRET_KEY')!;
-const stripeWebhookSecret = Deno.env.get('STRIPE_WEBHOOK_SECRET')!;
-const stripe = new Stripe(stripeSecret, {
-  appInfo: {
-    name: 'Bolt Integration',
-    version: '1.0.0',
-  },
-});
-
+const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY')!, { apiVersion: '2026-09-30.endive' });
 const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+const webhookSecret = Deno.env.get('STRIPE_WEBHOOK_SECRET')!;
 
 Deno.serve(async (req) => {
+  if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  const signature = req.headers.get('stripe-signature');
+  if (!signature) return new Response('Missing signature', { status: 400 });
+  let event: Stripe.Event;
   try {
-    // Handle OPTIONS request for CORS preflight
-    if (req.method === 'OPTIONS') {
-      return new Response(null, { status: 204 });
-    }
-
-    if (req.method !== 'POST') {
-      return new Response('Method not allowed', { status: 405 });
-    }
-
-    // get the signature from the header
-    const signature = req.headers.get('stripe-signature');
-
-    if (!signature) {
-      return new Response('No signature found', { status: 400 });
-    }
-
-    // get the raw body
-    const body = await req.text();
-
-    // verify the webhook signature
-    let event: Stripe.Event;
-
-    try {
-      event = await stripe.webhooks.constructEventAsync(body, signature, stripeWebhookSecret);
-    } catch (error: any) {
-      console.error(`Webhook signature verification failed: ${error.message}`);
-      return new Response(`Webhook signature verification failed: ${error.message}`, { status: 400 });
-    }
-
-    EdgeRuntime.waitUntil(handleEvent(event));
-
+    event = await stripe.webhooks.constructEventAsync(await req.text(), signature, webhookSecret);
+  } catch {
+    return new Response('Invalid signature', { status: 400 });
+  }
+  try {
+    // Acknowledge only after persistence. Returning 200 before a background task
+    // finishes prevents Stripe from retrying a lost order or entitlement update.
+    await handleEvent(event);
     return Response.json({ received: true });
-  } catch (error: any) {
-    console.error('Error processing webhook:', error);
-    return Response.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    console.error('Stripe event persistence failed', event.id, error);
+    return Response.json({ error: 'Event could not be persisted; retry required.' }, { status: 500 });
   }
 });
 
 async function handleEvent(event: Stripe.Event) {
-  const stripeData = event?.data?.object ?? {};
-
-  if (!stripeData) {
-    return;
-  }
-
-  if (!('customer' in stripeData)) {
-    return;
-  }
-
-  // for one time payments, we only listen for the checkout.session.completed event
-  if (event.type === 'payment_intent.succeeded' && event.data.object.invoice === null) {
-    return;
-  }
-
-  const { customer: customerId } = stripeData;
-
-  if (!customerId || typeof customerId !== 'string') {
-    console.error(`No customer received on event: ${JSON.stringify(event)}`);
-  } else {
-    let isSubscription = true;
-
-    if (event.type === 'checkout.session.completed') {
-      const { mode } = stripeData as Stripe.Checkout.Session;
-
-      isSubscription = mode === 'subscription';
-
-      console.info(`Processing ${isSubscription ? 'subscription' : 'one-time payment'} checkout session`);
-    }
-
-    const { mode, payment_status } = stripeData as Stripe.Checkout.Session;
-
-    if (isSubscription) {
-      console.info(`Starting subscription sync for customer: ${customerId}`);
-      await syncCustomerFromStripe(customerId);
-    } else if (mode === 'payment' && payment_status === 'paid') {
-      try {
-        // Extract the necessary information from the session
-        const {
-          id: checkout_session_id,
-          payment_intent,
-          amount_subtotal,
-          amount_total,
-          currency,
-          metadata,
-          customer_details,
-        } = stripeData as Stripe.Checkout.Session;
-
-        // Insert the order into the stripe_orders table
-        const { error: orderError } = await supabase.from('stripe_orders').insert({
-          checkout_session_id,
-          payment_intent_id: payment_intent,
-          customer_id: customerId,
-          amount_subtotal,
-          amount_total,
-          currency,
-          payment_status,
-          status: 'completed', // assuming we want to mark it as completed since payment is successful
-        });
-
-        if (orderError) {
-          console.error('Error inserting order:', orderError);
-          return;
-        }
-
-        // NFT purchase: mark the sale and increment minted supply atomically.
-        if (metadata?.nft_id) {
-          const { error: saleError } = await supabase
-            .from('nft_sales')
-            .update({
-              status: 'completed',
-              stripe_payment_intent_id: typeof payment_intent === 'string' ? payment_intent : null,
-              amount_total,
-              currency,
-              buyer_email: metadata.buyer_email || customer_details?.email || '',
-              updated_at: new Date().toISOString(),
-            })
-            .eq('stripe_checkout_session_id', checkout_session_id);
-
-          if (saleError) {
-            console.error('Error updating NFT sale:', saleError);
-          }
-
-          const { error: mintError } = await supabase.rpc('increment_nft_minted_count', {
-            p_nft_id: metadata.nft_id,
-          });
-
-          if (mintError) {
-            console.error('Error incrementing minted count:', mintError);
-          } else {
-            console.info(`NFT ${metadata.nft_id} minted_count incremented for session ${checkout_session_id}`);
-          }
-        }
-
-        console.info(`Successfully processed one-time payment for session: ${checkout_session_id}`);
-      } catch (error) {
-        console.error('Error processing one-time payment:', error);
+  if (event.type.startsWith('checkout.session.')) {
+    const session = event.data.object as Stripe.Checkout.Session;
+    if (isPaidCheckout(event.type, session)) {
+      if (!session.metadata?.nft_id) return;
+      const customerId = objectId(session.customer);
+      const paymentIntentId = objectId(session.payment_intent);
+      if (!customerId || !paymentIntentId || session.amount_total === null || session.amount_subtotal === null || !session.currency) {
+        throw new Error('Paid checkout is missing required payment references.');
       }
+      // Sale transition, stock increment and order insertion share one database
+      // transaction. Duplicated/concurrent webhook deliveries are no-ops.
+      const { error } = await supabase.rpc('fulfill_nft_checkout', {
+        p_session_id: session.id,
+        p_reservation_id: session.metadata.reservation_id || null,
+        p_nft_id: session.metadata.nft_id,
+        p_payment_intent_id: paymentIntentId,
+        p_customer_id: customerId,
+        p_amount_total: session.amount_total,
+        p_amount_subtotal: session.amount_subtotal,
+        p_currency: session.currency,
+        p_buyer_email: session.customer_details?.email ?? '',
+      });
+      if (error) throw error;
+      return;
     }
+    if (['checkout.session.expired', 'checkout.session.async_payment_failed'].includes(event.type)) {
+      let query = supabase.from('nft_sales').update({ status: 'canceled', updated_at: new Date().toISOString() }).eq('status', 'pending');
+      query = session.metadata?.reservation_id
+        ? query.eq('id', session.metadata.reservation_id)
+        : query.eq('stripe_checkout_session_id', session.id);
+      const { error } = await query;
+      if (error) throw error;
+      return;
+    }
+    if (session.mode === 'subscription' && event.type === 'checkout.session.completed') {
+      const customerId = objectId(session.customer);
+      if (customerId) await syncCustomerFromStripe(customerId);
+    }
+    return;
+  }
+  if (event.type.startsWith('customer.subscription.') || ['invoice.paid', 'invoice.payment_failed', 'invoice.payment_action_required'].includes(event.type)) {
+    const object = event.data.object as unknown as { customer?: unknown };
+    const customerId = objectId(object.customer);
+    if (customerId) await syncCustomerFromStripe(customerId);
+    return;
+  }
+  if (['charge.dispute.created', 'charge.refunded', 'radar.early_fraud_warning.created'].includes(event.type)) {
+    const object = event.data.object as unknown as { id: string; charge?: unknown; customer?: unknown };
+    const chargeId = event.type === 'charge.refunded' ? object.id : objectId(object.charge);
+    if (!chargeId) throw new Error('Risk event has no charge reference.');
+    const charge = await stripe.charges.retrieve(chargeId);
+    // Preserve a review task for the operator; refunds/disputes do not silently
+    // change subscription contracts or trigger additional charges.
+    const { error } = await supabase.rpc('record_billing_review_event', {
+      p_event_id: event.id, p_event_type: event.type, p_charge_id: charge.id,
+      p_customer_id: objectId(charge.customer), p_created: event.created,
+    });
+    if (error) throw error;
   }
 }
 
-// based on the excellent https://github.com/t3dotgg/stripe-recommendations
 async function syncCustomerFromStripe(customerId: string) {
-  try {
-    // fetch latest subscription data from Stripe
-    const subscriptions = await stripe.subscriptions.list({
-      customer: customerId,
-      limit: 1,
-      status: 'all',
-      expand: ['data.default_payment_method'],
-    });
-
-    // TODO verify if needed
-    if (subscriptions.data.length === 0) {
-      console.info(`No active subscriptions found for customer: ${customerId}`);
-      const { error: noSubError } = await supabase.from('stripe_subscriptions').upsert(
-        {
-          customer_id: customerId,
-          subscription_status: 'not_started',
-        },
-        {
-          onConflict: 'customer_id',
-        },
-      );
-
-      if (noSubError) {
-        console.error('Error updating subscription status:', noSubError);
-        throw new Error('Failed to update subscription status in database');
-      }
-    }
-
-    // assumes that a customer can only have a single subscription
-    const subscription = subscriptions.data[0];
-
-    // store subscription state
-    const { error: subError } = await supabase.from('stripe_subscriptions').upsert(
-      {
-        customer_id: customerId,
-        subscription_id: subscription.id,
-        price_id: subscription.items.data[0].price.id,
-        current_period_start: subscription.current_period_start,
-        current_period_end: subscription.current_period_end,
-        cancel_at_period_end: subscription.cancel_at_period_end,
-        ...(subscription.default_payment_method && typeof subscription.default_payment_method !== 'string'
-          ? {
-              payment_method_brand: subscription.default_payment_method.card?.brand ?? null,
-              payment_method_last4: subscription.default_payment_method.card?.last4 ?? null,
-            }
-          : {}),
-        status: subscription.status,
-      },
-      {
-        onConflict: 'customer_id',
-      },
-    );
-
-    if (subError) {
-      console.error('Error syncing subscription:', subError);
-      throw new Error('Failed to sync subscription in database');
-    }
-    console.info(`Successfully synced subscription for customer: ${customerId}`);
-  } catch (error) {
-    console.error(`Failed to sync subscription for customer ${customerId}:`, error);
-    throw error;
+  const subscriptions = await stripe.subscriptions.list({
+    customer: customerId, limit: 100, status: 'all', expand: ['data.default_payment_method'],
+  });
+  // Prioritize an entitled contract over a more recent canceled attempt.
+  const eligible = subscriptions.data.filter(s => s.metadata.tier === 'pro');
+  const subscription = eligible.find(s => ['active', 'trialing', 'past_due'].includes(s.status)) ?? eligible[0];
+  if (!subscription) {
+    const { error } = await supabase.from('stripe_subscriptions').upsert({
+      customer_id: customerId, status: 'not_started', subscription_id: null, price_id: null,
+      current_period_start: null, current_period_end: null, cancel_at_period_end: false,
+      payment_method_brand: null, payment_method_last4: null, updated_at: new Date().toISOString(),
+    }, { onConflict: 'customer_id' });
+    if (error) throw error;
+    return;
   }
+  const item = subscription.items.data[0];
+  if (!item) throw new Error('Subscription has no price item.');
+  const paymentMethod = typeof subscription.default_payment_method === 'object' ? subscription.default_payment_method : null;
+  const { error } = await supabase.from('stripe_subscriptions').upsert({
+    customer_id: customerId, subscription_id: subscription.id, price_id: item.price.id,
+    current_period_start: item.current_period_start, current_period_end: item.current_period_end,
+    cancel_at_period_end: subscription.cancel_at_period_end,
+    payment_method_brand: paymentMethod?.card?.brand ?? null,
+    payment_method_last4: paymentMethod?.card?.last4 ?? null,
+    status: subscription.status, updated_at: new Date().toISOString(),
+  }, { onConflict: 'customer_id' });
+  if (error) throw error;
 }

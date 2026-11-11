@@ -31,6 +31,7 @@ export function buildExecutionCsv(
   const lines: string[] = [];
 
   lines.push(toLine(['Exported at', exportedAt]));
+  lines.push(toLine(['Scope', 'Fetched order and fill window only. Incomplete P&L is left blank.']));
   lines.push('');
 
   lines.push(toLine(['BALANCES']));
@@ -51,7 +52,7 @@ export function buildExecutionCsv(
       o.status,
       o.executedQty,
       o.quoteValue,
-      o.pnl ? o.pnl.realizedPnl.toFixed(4) : null,
+      o.pnl?.complete ? o.pnl.realizedPnl.toFixed(4) : null,
       o.pnl ? (o.pnl.complete ? 'yes' : 'no') : null,
     ]));
   }

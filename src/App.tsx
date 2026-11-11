@@ -6,6 +6,7 @@ import Header from '@/components/Header';
 import OperatorGate from '@/components/OperatorGate';
 import OperatorStatusCard from '@/components/OperatorStatusCard';
 import ErrorBoundary from '@/components/ErrorBoundary';
+import Overview from '@/components/Overview';
 import { useOperatorSession } from '@/lib/useOperatorSession';
 import { signOutOperator } from '@/lib/operatorAuth';
 
@@ -38,10 +39,11 @@ const LiveExecutionDashboard = lazy(() => import('@/components/LiveExecutionDash
 
 const SignalsPro = lazy(() => import('@/components/SignalsPro'));
 
-const DATABASE_TABS = new Set<TabId>(['command', 'dashboard', 'table', 'operations']);
+const DATABASE_TABS = new Set<TabId>(['command', 'dashboard', 'performance', 'table', 'operations']);
 const DASHBOARD_DATA_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/binance-feed/dashboard-data`;
 
 const TABS: { id: TabId; label: string; icon: typeof Monitor }[] = [
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'sprint', label: '24h Sprint', icon: Flame },
   { id: 'live', label: 'Live Terminal', icon: Radio },
   { id: 'execution', label: 'Live Execution', icon: Activity },
@@ -67,13 +69,13 @@ function tabFromHash(): TabId | null {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<TabId>(() => tabFromHash() ?? 'swarm');
+  const [tab, setTab] = useState<TabId>(() => tabFromHash() ?? 'overview');
   const inStoreMode = tab === NFT_STORE_TAB;
 
   useEffect(() => {
     const sync = () => {
       const fromHash = tabFromHash();
-      if (fromHash) setTab(fromHash);
+      setTab(fromHash ?? 'overview');
     };
     window.addEventListener('hashchange', sync);
     return () => window.removeEventListener('hashchange', sync);
@@ -82,7 +84,7 @@ export default function App() {
   function switchTab(next: TabId) {
     setTab(next);
     if (window.location.hash !== `#${next}`) {
-      window.history.replaceState(null, '', `#${next}`);
+      window.history.pushState(null, '', `#${next}`);
     }
   }
   const [factions, setFactions] = useState<Faction[]>([]);
@@ -92,6 +94,7 @@ export default function App() {
   const [sentiment, setSentiment] = useState<Sentiment | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [dataError, setDataError] = useState('');
+  const [sessionError, setSessionError] = useState('');
   const { status: operatorStatus, email: operatorEmail } = useOperatorSession();
 
   const fetchAll = useCallback(async () => {
@@ -136,7 +139,7 @@ export default function App() {
       {inStoreMode ? null : <Suspense fallback={null}><SecurityStatusBar /></Suspense>}
 
       {inStoreMode ? null : (
-      <nav className="sticky top-[110px] z-40 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-xl">
+      <nav aria-label="Workspace" className="relative z-40 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1600px] gap-1 overflow-x-auto px-4 py-2 sm:px-6">
           {TABS.map(t => {
             const Icon = t.icon;
@@ -159,7 +162,7 @@ export default function App() {
           })}
           {(operatorStatus === 'operator' || operatorStatus === 'signed-in') && (
             <button
-              onClick={() => { void signOutOperator(); }}
+              onClick={() => { void signOutOperator().then(() => setSessionError('')).catch(error => setSessionError(error instanceof Error ? error.message : 'Sign-out failed. Please try again.')); }}
               className="ml-auto flex-shrink-0 rounded-lg px-4 py-2 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-900 hover:text-zinc-300"
             >
               Sign out
@@ -170,6 +173,7 @@ export default function App() {
       )}
 
       <main id="main-content" className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
+        {sessionError && <p role="alert" className="mb-5 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">{sessionError}</p>}
         {dataError && DATABASE_TABS.has(tab) ? (
           <div role="alert" className="mb-5 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
             {dataError}
@@ -178,6 +182,7 @@ export default function App() {
         <Suspense fallback={<div className="py-24 text-center text-sm text-zinc-500">Loading workspace…</div>}>
         <ErrorBoundary key={tab}>
         <div className="space-y-8 animate-rise-in">
+          {tab === 'overview' && <Overview operator={operatorStatus === 'operator'} onNavigate={switchTab} />}
           {tab === 'sprint' && (
             <RevenueSprintDashboard />
           )}
@@ -215,7 +220,7 @@ export default function App() {
           )}
 
           {tab === 'performance' && (
-            <FactionPerformanceDashboard factions={factions} />
+            <OperatorGate status={operatorStatus}><FactionPerformanceDashboard factions={factions} /></OperatorGate>
           )}
 
           {tab === 'table' && (
@@ -251,7 +256,7 @@ export default function App() {
           {tab === 'nft' && (
             <div className="flex flex-col items-center gap-4">
               <button
-                onClick={() => switchTab('swarm')}
+                onClick={() => switchTab('overview')}
                 className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs font-semibold text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-200"
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
@@ -274,10 +279,10 @@ export default function App() {
           )}
 
           {tab === 'revenue' && (
-            <>
+            <OperatorGate status={operatorStatus}>
               <ProfitHistory />
               <RevenueCommandCenter />
-            </>
+            </OperatorGate>
           )}
 
           {tab === 'withdrawal' && (

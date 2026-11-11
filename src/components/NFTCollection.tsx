@@ -48,7 +48,7 @@ export default function NFTCollection() {
   const [copied, setCopied] = useState(false);
   const [buyingId, setBuyingId] = useState<string | null>(null);
   const [buyError, setBuyError] = useState('');
-  const [purchaseComplete, setPurchaseComplete] = useState(false);
+  const [checkoutReturned, setCheckoutReturned] = useState(false);
   const [recentSales, setRecentSales] = useState<RecentSale[]>([]);
 
   const fetchRecentSales = useCallback(async () => {
@@ -88,17 +88,24 @@ export default function NFTCollection() {
 
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get('nft') === 'success') {
-      setPurchaseComplete(true);
-      window.history.replaceState({}, '', window.location.pathname);
+      setCheckoutReturned(true);
+      window.history.replaceState({}, '', `${window.location.pathname}#nft`);
     }
   }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+    const dismiss = (event: KeyboardEvent) => { if (event.key === 'Escape') setSelected(null); };
+    window.addEventListener('keydown', dismiss);
+    return () => window.removeEventListener('keydown', dismiss);
+  }, [selected]);
 
   async function handleBuy(nft: NFTCard) {
     setBuyError('');
     setBuyingId(nft.id);
     try {
       const origin = `${window.location.origin}${window.location.pathname}`;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const headers: Record<string, string> = { 'Content-Type': 'application/json', apikey: import.meta.env.VITE_SUPABASE_ANON_KEY };
       const { data } = await supabase.auth.getSession();
       if (data.session) headers.Authorization = `Bearer ${data.session.access_token}`;
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-checkout`, {
@@ -106,7 +113,7 @@ export default function NFTCollection() {
         headers,
         body: JSON.stringify({
           nft_id: nft.id,
-          success_url: `${origin}?nft=success`,
+          success_url: `${origin}?nft=success#nft`,
           cancel_url: `${origin}#nft`,
         }),
       });
@@ -114,6 +121,8 @@ export default function NFTCollection() {
       if (!response.ok || !body.url) {
         throw new Error(body.error === 'Sold out' ? 'This card just sold out.' : 'Checkout could not start. Please try again.');
       }
+      const destination = new URL(body.url);
+      if (destination.protocol !== 'https:' || destination.hostname !== 'checkout.stripe.com') throw new Error('Unexpected checkout destination.');
       window.location.href = body.url;
     } catch (cause) {
       setBuyError(cause instanceof Error ? cause.message : 'Checkout could not start. Please try again.');
@@ -145,7 +154,7 @@ export default function NFTCollection() {
   }
 
   function handleShareCard(nft: NFTCard) {
-    const url = `${window.location.origin}/#nft`;
+    const url = `${window.location.origin}${window.location.pathname}#nft`;
     if (navigator.share) {
       navigator.share({
         title: `${nft.name} — ${nft.rarity.toUpperCase()} NFT`,
@@ -165,7 +174,7 @@ export default function NFTCollection() {
 
   return (
     <section className="space-y-5">
-      {purchaseComplete && <p className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300"><ShieldCheck className="h-4 w-4" /> Payment received — your card is reserved. It may take a few seconds to appear as minted.</p>}
+      {checkoutReturned && <p className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300"><ShieldCheck className="h-4 w-4" /> Checkout returned. Your purchase is confirmed only after payment verification; check your Stripe receipt. Blockchain minting and wallet delivery are not provided by this checkout.</p>}
       {buyError && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{buyError}</p>}
       {loadError && <p role="alert" className="rounded-lg border border-red-500/30 p-3 text-sm text-red-300">{loadError}<button onClick={() => void fetchNFTs()} className="ml-3 underline">Retry</button></p>}
       {/* Hero Banner */}
@@ -180,7 +189,7 @@ export default function NFTCollection() {
               <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-400">v1</span>
             </div>
             <p className="text-sm text-zinc-400 max-w-lg">
-              Faction artwork and collection designs. One tap and you own a card — payment is secured by Stripe and your card is reserved the moment it clears.
+              Faction artwork and collection designs. Digital collection reservations paid through Stripe. This checkout records a purchase; blockchain minting and wallet delivery are not currently available.
             </p>
             <div className="mt-3 flex items-center gap-4 text-[11px]">
               <span className="flex items-center gap-1 text-amber-400">
@@ -197,7 +206,7 @@ export default function NFTCollection() {
           <div className="flex items-center gap-2">
             <button
               onClick={() => void handleQuickBuy()}
-              disabled={buyingId !== null}
+              disabled={buyingId !== null || loading || Boolean(loadError) || !cheapestAvailable}
               className="group relative flex items-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-400 px-5 py-3 text-sm font-bold text-black shadow-lg shadow-amber-500/25 transition-all hover:shadow-amber-400/40 hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {buyingId !== null ? (
@@ -208,7 +217,7 @@ export default function NFTCollection() {
               {buyingId !== null
                 ? 'Opening checkout…'
                 : cheapestAvailable
-                  ? `Mint Now — ${Number(cheapestAvailable.mint_price).toFixed(2)}`
+                  ? `Buy card — $${Number(cheapestAvailable.mint_price).toFixed(2)}`
                   : 'Sold Out'}
             </button>
             <button
@@ -224,12 +233,13 @@ export default function NFTCollection() {
       {/* Stats Bar */}
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-center">
-          <p className="text-[10px] uppercase tracking-wider text-zinc-600">Total Minted</p>
-          <p className="font-mono text-lg font-bold tabular-nums text-zinc-100">{nfts.reduce((s, n) => s + n.minted_count, 0)} / {totalSupply} minted</p>
+          <p className="text-[10px] uppercase tracking-wider text-zinc-600">Recorded purchases</p>
+          <p className="font-mono text-lg font-bold tabular-nums text-zinc-100">{nfts.reduce((s, n) => s + n.minted_count, 0)} / {totalSupply} recorded</p>
         </div>
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-center">
-          <p className="text-[10px] uppercase tracking-wider text-zinc-600">Mint Revenue</p>
+          <p className="text-[10px] uppercase tracking-wider text-zinc-600">Recorded purchase list value</p>
           <p className="font-mono text-lg font-bold tabular-nums text-emerald-400">${nfts.reduce((s, n) => s + Number(n.mint_price) * n.minted_count, 0).toFixed(2)}</p>
+          <p className="mt-1 text-[10px] text-zinc-500">At current prices; excludes refunds and fees.</p>
         </div>
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-center">
           <p className="text-[10px] uppercase tracking-wider text-zinc-600">Unique Cards</p>
@@ -342,7 +352,7 @@ export default function NFTCollection() {
                 {/* Mint progress */}
                 <div className="mb-3">
                   <div className="mb-1 flex items-center justify-between text-[9px] text-zinc-600">
-                    <span>{nft.minted_count} / {nft.total_supply} minted</span>
+                    <span>{nft.minted_count} / {nft.total_supply} recorded</span>
                     <span>{Math.round(mintProgress)}%</span>
                   </div>
                   <div className="h-1.5 w-full rounded-full bg-zinc-800">
@@ -357,7 +367,7 @@ export default function NFTCollection() {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => void handleBuy(nft)}
-                    disabled={soldOut || buyingId === nft.id}
+                    disabled={soldOut || buyingId !== null}
                     className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                       soldOut
                         ? 'bg-zinc-800 text-zinc-500'
@@ -365,7 +375,7 @@ export default function NFTCollection() {
                     }`}
                   >
                     {buyingId === nft.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flame className="h-4 w-4" />}
-                    {soldOut ? 'Sold Out' : buyingId === nft.id ? 'Opening checkout…' : `Buy — ${Number(nft.mint_price).toFixed(2)}`}
+                    {soldOut ? 'Sold Out' : buyingId === nft.id ? 'Opening checkout…' : `Buy — $${Number(nft.mint_price).toFixed(2)}`}
                   </button>
                   <button
                     onClick={() => handleShareCard(nft)}
@@ -393,11 +403,15 @@ export default function NFTCollection() {
             onClick={() => setSelected(null)}
           >
             <div
+              role="dialog"
+              aria-modal="true"
+              aria-label={selected.name}
               className={`relative max-w-md w-full rounded-2xl border ${rarityStyle.border} bg-gradient-to-br from-zinc-900 to-zinc-950 p-6 ${rarityStyle.glow}`}
               onClick={e => e.stopPropagation()}
             >
               <button
                 onClick={() => setSelected(null)}
+                aria-label="Close card details"
                 className="absolute right-3 top-3 rounded-lg bg-zinc-800/80 p-1.5 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200 transition-all"
               >
                 <X className="h-4 w-4" />
@@ -435,7 +449,7 @@ export default function NFTCollection() {
                   <p className="font-mono text-xl font-bold" style={{ color: accentColor }}>{selected.power}</p>
                 </div>
                 <div className="rounded-xl bg-zinc-950/60 p-3 text-center">
-                  <p className="text-[9px] uppercase tracking-wider text-zinc-600">Mint Price</p>
+                  <p className="text-[9px] uppercase tracking-wider text-zinc-600">Card price</p>
                   <p className="font-mono text-xl font-bold text-emerald-400">${selected.mint_price}</p>
                 </div>
                 <div className="rounded-xl bg-zinc-950/60 p-3 text-center">
@@ -451,7 +465,7 @@ export default function NFTCollection() {
               {/* Supply */}
               <div className="mb-4">
                 <div className="mb-1 flex items-center justify-between text-[10px] text-zinc-600">
-                  <span>{selected.minted_count} / {selected.total_supply} minted</span>
+                  <span>{selected.minted_count} / {selected.total_supply} recorded</span>
                   <span>{selected.total_supply > 0 ? Math.round((selected.minted_count / selected.total_supply) * 100) : 0}%</span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-zinc-800">
@@ -466,7 +480,7 @@ export default function NFTCollection() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => void handleBuy(selected)}
-                  disabled={selected.minted_count >= selected.total_supply || buyingId === selected.id}
+                  disabled={selected.minted_count >= selected.total_supply || buyingId !== null}
                   className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                     selected.minted_count >= selected.total_supply
                       ? 'bg-zinc-800 text-zinc-500'
@@ -474,7 +488,7 @@ export default function NFTCollection() {
                   }`}
                 >
                   {buyingId === selected.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flame className="h-4 w-4" />}
-                  {selected.minted_count >= selected.total_supply ? 'Sold Out' : buyingId === selected.id ? 'Opening checkout…' : `Buy — ${Number(selected.mint_price).toFixed(2)}`}
+                  {selected.minted_count >= selected.total_supply ? 'Sold Out' : buyingId === selected.id ? 'Opening checkout…' : `Buy — $${Number(selected.mint_price).toFixed(2)}`}
                 </button>
                 <a
                   href={selected.image_url}

@@ -1,137 +1,42 @@
 import { useCallback, useState } from 'react';
-import { BarChart3, DollarSign, TrendingUp, Wallet, Flame } from 'lucide-react';
+import { BarChart3 } from 'lucide-react';
 import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
+import { formatRevenue, numericAmount } from '@/lib/revenueAccounting';
 
-interface ProfitSnapshot {
-  day: string;
-  trading_pnl: number;
-  sweep_revenue: number;
-  nft_revenue: number;
-  total_revenue: number;
-  trade_count: number;
-}
-
-function formatMoney(n: number): string {
-  const abs = Math.abs(n);
-  const digits = abs >= 1000 ? 0 : 2;
-  const sign = n < 0 ? '-' : '';
-  return `${sign}$${abs.toLocaleString('en-US', { maximumFractionDigits: digits })}`;
-}
-
+interface ProfitSnapshot { day: string; trading_pnl: number; sweep_revenue: number; nft_revenue: number; trade_count: number }
 export default function ProfitHistory() {
   const [rows, setRows] = useState<ProfitSnapshot[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(hasDatabaseAccess);
   const [error, setError] = useState('');
-
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const fetchData = useCallback(async () => {
-    if (!hasDatabaseAccess) {
-      setLoading(false);
-      return;
-    }
     try {
-      const { data, error: dbError } = await supabase
-        .from('profit_snapshots')
-        .select('day, trading_pnl, sweep_revenue, nft_revenue, total_revenue, trade_count')
-        .order('day', { ascending: false })
-        .limit(30);
+      const since = new Date(Date.now() - 29 * 86_400_000).toISOString().slice(0, 10);
+      const { data, error: dbError } = await supabase.from('profit_snapshots')
+        .select('day, trading_pnl, sweep_revenue, nft_revenue, trade_count').gte('day', since)
+        .order('day', { ascending: true }).limit(31);
       if (dbError) throw new Error(dbError.message);
-      setRows(((data ?? []) as ProfitSnapshot[]).sort((a, b) => (a.day < b.day ? -1 : 1)));
-      setError('');
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Profit history is unavailable.');
-    } finally {
-      setLoading(false);
-    }
+      const snapshots = (data ?? []) as ProfitSnapshot[];
+      if (snapshots.some(row => [row.trading_pnl, row.sweep_revenue, row.nft_revenue].some(value => numericAmount(value) === null))) throw new Error('Snapshot amounts are incomplete.');
+      setRows(snapshots); setFetchedAt(new Date().toISOString()); setError('');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Historical snapshots are unavailable.'); }
+    finally { setLoading(false); }
   }, []);
-
   useVisibilityPolling(fetchData, 60_000, hasDatabaseAccess);
-
-  const total = rows.reduce((s, r) => s + Number(r.total_revenue), 0);
-  const trading = rows.reduce((s, r) => s + Number(r.trading_pnl), 0);
-  const sweep = rows.reduce((s, r) => s + Number(r.sweep_revenue), 0);
-  const nft = rows.reduce((s, r) => s + Number(r.nft_revenue), 0);
-  const maxAbs = Math.max(1, ...rows.map(r => Math.abs(Number(r.total_revenue))));
-
+  const available = !!fetchedAt && !error && rows.length > 0;
+  const sum = (key: 'trading_pnl' | 'sweep_revenue' | 'nft_revenue') => available ? rows.reduce((total, row) => total + Number(row[key]), 0) : null;
   return (
-    <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
-      <div className="mb-4 flex items-center gap-2">
-        <BarChart3 className="h-5 w-5 text-emerald-400" />
-        <h2 className="text-base font-semibold text-zinc-200">Cumulative Profit Ledger</h2>
-        <span className="ml-auto text-[10px] text-zinc-600">Last {rows.length} days</span>
-      </div>
-
-      {error ? (
-        <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-          {error}
-        </div>
-      ) : null}
-
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div className="rounded-xl bg-zinc-950/50 p-3">
-          <div className="mb-1 flex items-center gap-1.5">
-            <DollarSign className="h-3 w-3 text-emerald-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Total (30d)</p>
-          </div>
-          <p className="font-mono text-lg font-bold tabular-nums text-emerald-400">{formatMoney(total)}</p>
-        </div>
-        <div className="rounded-xl bg-zinc-950/50 p-3">
-          <div className="mb-1 flex items-center gap-1.5">
-            <TrendingUp className="h-3 w-3 text-blue-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Trading P&L</p>
-          </div>
-          <p className="font-mono text-lg font-bold tabular-nums text-blue-400">{formatMoney(trading)}</p>
-        </div>
-        <div className="rounded-xl bg-zinc-950/50 p-3">
-          <div className="mb-1 flex items-center gap-1.5">
-            <Wallet className="h-3 w-3 text-cyan-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">Sweeps</p>
-          </div>
-          <p className="font-mono text-lg font-bold tabular-nums text-cyan-400">{formatMoney(sweep)}</p>
-        </div>
-        <div className="rounded-xl bg-zinc-950/50 p-3">
-          <div className="mb-1 flex items-center gap-1.5">
-            <Flame className="h-3 w-3 text-amber-400" />
-            <p className="text-[10px] uppercase tracking-wider text-zinc-600">NFT Mints</p>
-          </div>
-          <p className="font-mono text-lg font-bold tabular-nums text-amber-400">{formatMoney(nft)}</p>
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="flex h-40 items-center justify-center text-xs text-zinc-600">Loading history…</div>
-      ) : rows.length === 0 ? (
-        <p className="flex h-40 items-center justify-center text-xs text-zinc-600">
-          No profit recorded yet. Snapshots are captured daily.
-        </p>
-      ) : (
-        <div className="flex h-40 items-end gap-1.5">
-          {rows.map(r => {
-            const value = Number(r.total_revenue);
-            const height = Math.max(2, (Math.abs(value) / maxAbs) * 100);
-            const positive = value >= 0;
-            return (
-              <div key={r.day} className="group relative flex-1">
-                <div className="flex h-36 items-end">
-                  <div
-                    className={`w-full rounded-t transition-all ${positive ? 'bg-emerald-500/70' : 'bg-red-500/70'} group-hover:opacity-100 opacity-80`}
-                    style={{ height: `${height}%` }}
-                    title={`${r.day}: ${formatMoney(value)}`}
-                  />
-                </div>
-                <p className="mt-1 hidden truncate text-center text-[8px] text-zinc-600 sm:block">
-                  {new Date(r.day).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}
-                </p>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <div className="mt-3 flex items-center gap-4 text-[10px] text-zinc-600">
-        <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Profit day</span>
-        <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-red-500" /> Loss day</span>
-      </div>
+    <section className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+      <div className="flex flex-wrap items-center gap-2"><BarChart3 className="h-5 w-5 text-cyan-400" /><h2 className="text-base font-semibold text-zinc-200">Historical book snapshots</h2><span className="ml-auto text-xs text-zinc-500">Last 30 UTC days</span></div>
+      <p className="text-xs leading-relaxed text-zinc-400">These stored estimates have no reconciliation flag. Transfers are shown separately and are not added to revenue. NFT amounts are book sales, not confirmation of on-chain minting or net settlement.</p>
+      {!hasDatabaseAccess && <p role="status" className="text-sm text-amber-300">Connect the database to view historical snapshots.</p>}
+      {error && <p role="alert" className="text-sm text-red-300">{error} Totals are unavailable.</p>}
+      <div className="grid gap-3 sm:grid-cols-3">{[
+        ['Trading book P&L', sum('trading_pnl')], ['NFT book sales', sum('nft_revenue')], ['Transfers · excluded from revenue', sum('sweep_revenue')],
+      ].map(([label, amount]) => <div key={String(label)} className="rounded-xl bg-zinc-950/60 p-4"><p className="text-xs text-zinc-400">{label}</p><p className="mt-2 font-mono text-xl font-semibold text-zinc-200">{formatRevenue(amount as number | null)}</p></div>)}</div>
+      {loading ? <p className="py-8 text-center text-sm text-zinc-500">Loading snapshots…</p> : available ? <div className="overflow-x-auto"><table className="w-full min-w-[540px] text-left text-xs"><thead className="text-zinc-500"><tr><th className="py-3">UTC day</th><th className="text-right">Trading estimate</th><th className="text-right">NFT book sales</th><th className="text-right">Transfers</th></tr></thead><tbody>{rows.map(row => <tr key={row.day} className="border-t border-zinc-800 text-zinc-300"><td className="py-3">{row.day}</td><td className="text-right font-mono">{formatRevenue(Number(row.trading_pnl))}</td><td className="text-right font-mono">{formatRevenue(Number(row.nft_revenue))}</td><td className="text-right font-mono">{formatRevenue(Number(row.sweep_revenue))}</td></tr>)}</tbody></table></div> : !error && hasDatabaseAccess ? <p className="py-8 text-center text-sm text-zinc-500">No snapshots in this reporting window.</p> : null}
+      {fetchedAt && <p className="text-xs text-zinc-500">Checked {new Date(fetchedAt).toLocaleString()} · {rows.length} recorded days; missing days are not assumed to be zero.</p>}
     </section>
   );
 }

@@ -35,13 +35,16 @@ export default function BinanceFeedPanel() {
   const runScan = async () => {
     setScanning(true);
     setScanResult(null);
+    setError(null);
     try {
       const result = await runStrategyScan();
       if (result) {
-        setScanResult(`Found ${result.signals} signals, opened ${result.tradesOpened} paper trades, closed ${result.tradesClosed} positions`);
+        setScanResult(`Found ${result.signals} signals, opened ${result.tradesOpened} ${result.mode ?? ''} trades, closed ${result.tradesClosed} positions`);
       } else {
         setScanResult('Scan failed — check connection');
       }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Scan status is unavailable.');
     } finally {
       setScanning(false);
     }
@@ -56,7 +59,7 @@ export default function BinanceFeedPanel() {
         <h2 className="text-base font-semibold text-zinc-200">Binance Live Market Data</h2>
         <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1 text-[11px] font-semibold text-emerald-400">
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          LIVE
+          {error ? 'UNAVAILABLE' : prices.length ? 'CONNECTED' : 'CONNECTING'}
         </span>
       </div>
 
