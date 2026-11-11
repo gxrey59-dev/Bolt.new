@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Download, RefreshCw, Wallet, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, Download, RefreshCw, Wallet } from 'lucide-react';
 import ExecutionOrdersTable from '@/components/ExecutionOrdersTable';
 import PairAllowlistPanel from '@/components/PairAllowlistPanel';
 import { hasDatabaseAccess, supabase } from '@/lib/supabase';
@@ -8,7 +8,6 @@ import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import { buildExecutionOrders } from '@/lib/executionOrders';
 import { buildExecutionCsv, downloadCsv } from '@/lib/executionCsv';
 import { summarizeExecution, isSnapshotStale, type ExchangeBalance, type ReconciliationCandidate } from '@/lib/executionHealth';
-import { runStrategyScan } from '@/lib/engine';
 import type { BinanceOrder, SymbolHistory } from '@/lib/tradePnl';
 
 interface OverviewResponse {
@@ -60,9 +59,7 @@ async function fetchFactionByOrderId(): Promise<Map<string, string>> {
 export default function LiveExecutionDashboard() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState('');
-  const [actionMessage, setActionMessage] = useState('');
   const [loading, setLoading] = useState(true);
-  const [scanning, setScanning] = useState(false);
   const [clock, setClock] = useState(Date.now());
   const busy = useRef(false);
 
@@ -133,20 +130,6 @@ export default function LiveExecutionDashboard() {
     downloadCsv(`live-execution-${stamp}.csv`, buildExecutionCsv(overview!.balances, orders, snapshot.histories, new Date().toISOString()));
   }
 
-  async function handleScanNow() {
-    if (!window.confirm('Run a strategy scan? In live mode this can place real exchange orders using the configured limits.')) return;
-    setScanning(true);
-    setActionMessage('');
-    try {
-      const result = await runStrategyScan();
-      if (!result) throw new Error('The strategy scan did not confirm a result.');
-      setActionMessage(`Scan completed: ${result.tradesOpened} opened, ${result.tradesClosed} closed.`);
-      await refresh();
-    } catch (cause) {
-      setActionMessage(cause instanceof Error ? cause.message : 'The scan failed.');
-    } finally { setScanning(false); }
-  }
-
   return (
     <section className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
@@ -160,11 +143,9 @@ export default function LiveExecutionDashboard() {
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />{loading ? 'Refreshing…' : 'Refresh'}
           </button>
           <button onClick={exportCsv} disabled={loading || stale || orders.length === 0} className="flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-200 disabled:opacity-40"><Download className="h-3.5 w-3.5" />Export CSV</button>
-          <button onClick={() => void handleScanNow()} disabled={scanning || loading || stale || !overview?.canTrade} className="flex items-center gap-2 rounded-lg bg-amber-400 px-3 py-2 text-xs font-semibold text-black disabled:opacity-40"><Zap className="h-3.5 w-3.5" />{scanning ? 'Scanning…' : 'Scan & trade'}</button>
         </div>
       </div>
       {error && <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">{error}{snapshot ? ' Values below are from the last successful refresh.' : ' Balances and positions have not been verified.'}</div>}
-      {actionMessage && <p role="status" className="rounded-lg border border-zinc-700 p-3 text-sm text-zinc-300">{actionMessage}</p>}
       {overview && !overview.canTrade && <p className="rounded-lg border border-amber-500/30 p-3 text-sm text-amber-300">The exchange reports that this account cannot trade. Account data remains available for review.</p>}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
         <Metric label="Free USDT" value={overview ? `$${money(usdt?.free ?? 0)}` : '—'} />

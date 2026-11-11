@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
-import { Coins, RefreshCw, Brain } from 'lucide-react';
-import { fetchLivePrices, runStrategyScan } from '@/lib/engine';
+import { Coins, RefreshCw } from 'lucide-react';
+import { fetchLivePrices } from '@/lib/engine';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 
 interface TickerData {
@@ -15,8 +15,6 @@ interface TickerData {
 export default function BinanceFeedPanel() {
   const [prices, setPrices] = useState<TickerData[]>([]);
   const [loading, setLoading] = useState(false);
-  const [scanning, setScanning] = useState(false);
-  const [scanResult, setScanResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const fetchPrices = useCallback(async () => {
@@ -31,24 +29,6 @@ export default function BinanceFeedPanel() {
       setLoading(false);
     }
   }, []);
-
-  const runScan = async () => {
-    setScanning(true);
-    setScanResult(null);
-    setError(null);
-    try {
-      const result = await runStrategyScan();
-      if (result) {
-        setScanResult(`Found ${result.signals} signals, opened ${result.tradesOpened} ${result.mode ?? ''} trades, closed ${result.tradesClosed} positions`);
-      } else {
-        setScanResult('Scan failed — check connection');
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Scan status is unavailable.');
-    } finally {
-      setScanning(false);
-    }
-  };
 
   useVisibilityPolling(fetchPrices, 10_000);
 
@@ -73,25 +53,11 @@ export default function BinanceFeedPanel() {
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             Refresh Prices
           </button>
-          <button
-            onClick={runScan}
-            disabled={scanning}
-            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
-          >
-            <Brain className="h-3.5 w-3.5" />
-            {scanning ? 'Scanning…' : 'Run Strategy Scan'}
-          </button>
         </div>
 
         {error && (
           <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
             {error}
-          </div>
-        )}
-
-        {scanResult && (
-          <div className="mb-4 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-400">
-            {scanResult}
           </div>
         )}
 

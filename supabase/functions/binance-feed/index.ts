@@ -1290,7 +1290,13 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 async function requireScanCaller(req: Request, route: string): Promise<Response | null> {
   const provided = req.headers.get("x-cron-secret") ?? "";
-  if (!provided) return requireOperator(req, route);
+  if (!provided) {
+    logIntruder(req, route, "bad_cron_secret", "missing x-cron-secret");
+    return new Response(JSON.stringify({ error: "Unauthorized scan request" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
   const { data, error } = await supabase
     .from("internal_secrets")
     .select("value")

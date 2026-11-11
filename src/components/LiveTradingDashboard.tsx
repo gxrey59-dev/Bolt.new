@@ -8,7 +8,7 @@ import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import { FACTIONS, TRADING_PAIRS } from '@/lib/constants';
 import { operatorFetch } from '@/lib/operatorAuth';
-import { fetchOpenPositions, closeAllPositions, runStrategyScan, fetchLivePrices } from '@/lib/engine';
+import { fetchOpenPositions, closeAllPositions, fetchLivePrices } from '@/lib/engine';
 import type { OpenPosition, PaperTrade } from '@/lib/types';
 import TradingOracle from '@/components/TradingOracle';
 import { describeClosePositions, positionUnrealizedPnl, totalPositionPnl, recordedTradeStats, readTradingResponse } from '@/lib/tradingStatus';
@@ -80,7 +80,6 @@ export default function LiveTradingDashboard() {
   const [prices, setPrices] = useState<PriceTick[]>([]);
   const [equityCurve, setEquityCurve] = useState<EquityPoint[]>([]);
   const [closing, setClosing] = useState(false);
-  const [scanning, setScanning] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
   const [togglingKill, setTogglingKill] = useState(false);
@@ -174,15 +173,6 @@ export default function LiveTradingDashboard() {
     }
   }
 
-  async function handleScan() {
-    setScanning(true); setActionError(''); setActionMessage('');
-    try {
-      const result = await runStrategyScan();
-      setActionMessage(`Scan complete: ${result.signals} signals, ${result.tradesOpened} opened, ${result.tradesClosed} closed.`);
-    } catch (cause) { setActionError(cause instanceof Error ? cause.message : 'Scan status is unavailable.'); }
-    finally { await fetchData(); setScanning(false); }
-  }
-
   async function changeKillSwitch(action: 'trip' | 'reset') {
     setTogglingKill(true); setConfirmKill(false); setActionError(''); setActionMessage('');
     try {
@@ -231,21 +221,12 @@ export default function LiveTradingDashboard() {
           {refreshedAt ? `Positions checked ${new Date(refreshedAt).toLocaleTimeString()}` : 'Checking positions…'}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <button
-            onClick={handleScan}
-            disabled={scanning || closing || togglingKill || !config || killActive}
-            title="One click: scans every pair and opens qualifying trades"
-            className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-amber-400 px-4 py-2 text-xs font-bold text-black shadow-lg shadow-amber-500/25 transition-all hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Zap className={`h-3.5 w-3.5 ${scanning ? 'animate-pulse' : ''}`} />
-            {scanning ? 'Scanning…' : 'Scan & Trade Now'}
-          </button>
           {positions.length > 0 && (
             confirmClose ? (
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={handleCloseAll}
-                  disabled={closing || scanning || togglingKill}
+                  disabled={closing || togglingKill}
                   className="flex items-center gap-1 rounded-lg bg-red-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-red-500 disabled:opacity-50"
                 >
                   {closing ? 'Closing…' : 'Confirm Close All'}
@@ -256,8 +237,8 @@ export default function LiveTradingDashboard() {
               </div>
             ) : (
               <button
-                disabled={closing || scanning || togglingKill}
                 onClick={() => setConfirmClose(true)}
+                disabled={closing || togglingKill}
                 className="flex items-center gap-1 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] font-bold text-red-400 hover:bg-red-500/20"
               >
                 Close All

@@ -7,33 +7,6 @@ import { readTradingResponse, parseClosePositionsResult, type ClosePositionsResu
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-// ─── Strategy Scan ─────────────────────────────────────────────────
-// Calls the edge function which fetches real Binance.US candles,
-// calculates indicators, evaluates strategies, and opens/closes paper trades.
-
-export async function runStrategyScan(): Promise<{
-  signals: number;
-  tradesOpened: number;
-  tradesClosed: number;
-  mode?: string;
-}> {
-  const res = await operatorFetch('binance-feed/scan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-  });
-  const data = await readTradingResponse(res);
-  if (data.killSwitchTripped) throw new Error('Trading is halted by the kill switch. Review the trading controls.');
-  if (![data.signals, data.tradesOpened, data.tradesClosed].every(value => Number.isSafeInteger(value) && Number(value) >= 0)) {
-    throw new Error(typeof data.reason === 'string' ? data.reason : 'The scan returned without execution counts. Check its status before retrying.');
-  }
-  return {
-    signals: Number(data.signals),
-    tradesOpened: Number(data.tradesOpened),
-    tradesClosed: Number(data.tradesClosed),
-    mode: typeof data.mode === 'string' ? data.mode : undefined,
-  };
-}
-
 // ─── Live Price Fetch ──────────────────────────────────────────────
 
 export async function fetchLivePrices(): Promise<
