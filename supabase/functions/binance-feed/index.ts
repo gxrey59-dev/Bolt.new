@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { entryClientOrderId, isDefinitiveOrderRejection, runClaimedEntry, recoverEntryTracking, liveExitBlockReason, parseOrderReceipt, RECONCILIATION_REQUIRED, runClaimedExit, valueOpenPosition, type ExchangeOrderResult } from "./trade-safety.ts";
+import { isBtcRegimeBullish, isMaxHoldExceeded, MAX_HOLD_HOURS } from "./regime-filter.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -1016,10 +1017,9 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
     let closeReason = "";
     let isPartialClose = false;
 
-    // Time-based exit: close after 48 hours regardless
-    if (hoursOpen >= 48) {
+    if (isMaxHoldExceeded(openedAt.getTime(), Date.now())) {
       shouldClose = true;
-      closeReason = `Time exit (${hoursOpen.toFixed(0)}h open)`;
+      closeReason = `Time exit (${hoursOpen.toFixed(0)}h open, limit ${MAX_HOLD_HOURS}h)`;
     }
     else if (isLong && trade.is_live === true && bearishExitSymbols.has(trade.symbol)) {
       shouldClose = true;
@@ -1547,6 +1547,9 @@ Deno.serve(async (req: Request) => {
       const tradesOpened: string[] = [];
       const bearishSymbols = new Set<string>();
       const allowedFactionsBySymbol = await getAllowedFactionsBySymbol();
+      const btcCandles = await fetchCandles("BTCUSDT", "1h", 100).catch(() => [] as Candle[]);
+      const btcClosedCloses = btcCandles.slice(-1)[0]?.closeTime > Date.now() ? btcCandles.slice(0, -1).map((c) => c.close) : btcCandles.map((c) => c.close);
+      const btcRegimeBullish = btcClosedCloses.length >= 50 && isBtcRegimeBullish(btcClosedCloses);
       const liveTickers = await fetchTickers(TRADING_PAIRS);
       const liveTickerMap = new Map(liveTickers.map((ticker) => [ticker.symbol, ticker]));
 
@@ -1588,6 +1591,14 @@ Deno.serve(async (req: Request) => {
             signals.push({
               symbol, faction: await pickFaction(symbol), strategy: signal.strategy, side: signal.side,
               reasoning: signal.reasoning + " [bearish: exit held position, no new long]", price: currentPrice, strength: signal.strength,
+              tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
+            });
+            continue;
+          }
+          if (signal.side === "long" && !btcRegimeBullish) {
+            signals.push({
+              symbol, faction: await pickFaction(symbol), strategy: signal.strategy, side: signal.side,
+              reasoning: signal.reasoning + " [skipped: BTC below its 50h average]", price: currentPrice, strength: signal.strength,
               tradeId: null, indicators: signal.indicators, skippedByWinRate: false,
             });
             continue;
