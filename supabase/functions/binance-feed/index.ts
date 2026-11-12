@@ -287,7 +287,7 @@ function calculateVolumeSMA(candles: Candle[], period: number = 20): number {
 // Minimum confluence score of 3 factors required to enter a trade.
 // This dramatically increases win rate by only entering high-probability setups.
 
-const MIN_CONFLUENCE = 3.5;
+const MIN_CONFLUENCE = 4.5;
 
 interface ConfluenceFactor {
   name: string;

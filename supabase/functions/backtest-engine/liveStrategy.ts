@@ -21,7 +21,7 @@ export interface LiveResult {
   trades: LiveTrade[];
 }
 
-const MIN_CONFLUENCE = 3.5;
+const MIN_CONFLUENCE = 4.5;
 const MAX_HOLD_BARS = 48;
 
 function ema(values: number[], period: number): number {
@@ -75,7 +75,7 @@ function macdHistogram(closes: number[]): { line: number; signal: number; histog
   return { line, signal: sig, histogram: line - sig };
 }
 
-// Mirrors the live confluence factors in binance-feed: long needs a bullish score of at least 3.5 with an uptrend.
+// Mirrors the live confluence factors in binance-feed: long needs a bullish score of at least 4.5 with an uptrend.
 export function confluenceSignal(candles: Candle[]): "long" | "short" | null {
   const closes = candles.map((c) => c.close);
   const price = closes[closes.length - 1];

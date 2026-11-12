@@ -3,7 +3,7 @@
   "functions": {
     "backtest-engine": {
       "hasChanged": false,
-      "hash": "3fe2256b941a33b1a640ba43f6b7b58a888a656e2a435eed30bca40627f2e7ee"
+      "hash": "a54b99ec7aaeb3abed496ac7f709d5e20f1ebc9701a2a2b0b271f3bbe886e6c1"
     },
     "binance-account": {
       "hasChanged": false,
@@ -11,7 +11,7 @@
     },
     "binance-feed": {
       "hasChanged": false,
-      "hash": "54f71a00703502c05a5195c5455b9e1098b3789e24dcc415a8d4140d98d81eaf"
+      "hash": "72c645ddf6378ff8157a6a2c9716fad7edb08f5ba2689e1d12a571cda8cddbfe"
     },
     "binance-withdraw": {
       "hasChanged": false,
