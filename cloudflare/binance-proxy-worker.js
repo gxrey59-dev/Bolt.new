@@ -57,10 +57,12 @@ export default {
       const fetchOptions = {
         method: request.method,
         headers,
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
       };
 
-      // Forward request body for POST requests
-      if (request.method === "POST") {
+      // Preserve signed form bodies for every method that permits a body.
+      if (request.method !== "GET" && request.method !== "HEAD") {
         const body = await request.text();
         if (body) {
           fetchOptions.body = body;
@@ -69,16 +71,17 @@ export default {
 
       const res = await fetch(binanceUrl, fetchOptions);
 
-      const body = await res.text();
-      return new Response(body, {
+      // Avoid a second full-body allocation and preserve no-content responses.
+      return new Response(res.body, {
         status: res.status,
         headers: {
           ...corsHeaders,
           "Content-Type": res.headers.get("Content-Type") ?? "application/json",
         },
       });
-    } catch (err) {
-      return new Response(JSON.stringify({ error: `Proxy fetch failed: ${err.message}` }), {
+    } catch {
+      // Exceptions may include a signed URL; never expose them to callers.
+      return new Response(JSON.stringify({ error: "Proxy fetch failed" }), {
         status: 502,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
