@@ -397,8 +397,14 @@ function evaluateStrategies(
   const isUptrend = currentPrice > ind.sma50 && ind.ema12 > ind.ema26;
   const isDowntrend = currentPrice < ind.sma50 && ind.ema12 < ind.ema26;
 
-  // Long entry: need minimum confluence score from bullish factors + uptrend confirmation
-  if (longScore >= MIN_CONFLUENCE && longScore > shortScore && isUptrend) {
+  // An RSI-based entry requires an RSI factor. Previously the score could be
+  // filled entirely by trend factors after a run-up, which is how the live
+  // session produced seven straight buy-high losses.
+  const longHasRsi = longFactors.some((f) => f.name.startsWith("RSI"));
+  const shortHasRsi = shortFactors.some((f) => f.name.startsWith("RSI"));
+
+  // Long entry: minimum confluence score + uptrend + an RSI factor present
+  if (longScore >= MIN_CONFLUENCE && longScore > shortScore && isUptrend && longHasRsi) {
     const factorNames = longFactors.map((f) => f.name).join(", ");
     const strength = Math.min(longScore / 6, 1);
     // Classify strategy by dominant factor
@@ -416,8 +422,8 @@ function evaluateStrategies(
     });
   }
 
-  // Short entry: need minimum confluence score from bearish factors + downtrend confirmation
-  if (shortScore >= MIN_CONFLUENCE && shortScore > longScore && isDowntrend) {
+  // Short entry: minimum confluence score + downtrend + an RSI factor present
+  if (shortScore >= MIN_CONFLUENCE && shortScore > longScore && isDowntrend && shortHasRsi) {
     const factorNames = shortFactors.map((f) => f.name).join(", ");
     const strength = Math.min(shortScore / 6, 1);
     const dominant = shortFactors.sort((a, b) => b.weight - a.weight)[0];
@@ -806,13 +812,11 @@ async function executeTrade(
   }
 
   const isLong = signal.side === "long";
-  // ATR-based stop loss — use the larger of configured SL or 1.5x ATR to avoid noise stops
-  const atr = signal.indicators.atr;
-  const atrPctOfPrice = atr > 0 ? (atr / currentPrice) * 100 : config.stopLossPct;
-  // Use configured SL, but never tighter than 1.5x ATR (prevents noise-driven exits)
-  const effectiveStopPct = Math.max(config.stopLossPct, Math.min(atrPctOfPrice * 1.5, 5.0));
-  // Take profit at 3x the stop distance — let winners run for bigger gains
-  const effectiveTpPct = Math.max(config.takeProfitPct, effectiveStopPct * 3);
+  // Operator's SL/TP settings are the authority. Earlier ATR widening and a
+  // 3x-rule TP override silently replaced them and the live results diverged
+  // from every backtest run with the configured values.
+  const effectiveStopPct = config.stopLossPct;
+  const effectiveTpPct = config.takeProfitPct;
   let stopLoss = isLong ? currentPrice * (1 - effectiveStopPct / 100) : currentPrice * (1 + effectiveStopPct / 100);
   let takeProfit = isLong ? currentPrice * (1 + effectiveTpPct / 100) : currentPrice * (1 - effectiveTpPct / 100);
 
