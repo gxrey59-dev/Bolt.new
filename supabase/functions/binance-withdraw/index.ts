@@ -155,7 +155,14 @@ async function binanceSignedCall(
 
   // Attempt 2: Cloudflare Worker proxy
   const proxyUrl = Deno.env.get("BINANCE_PROXY_URL");
-  const proxySecret = Deno.env.get("PROXY_SECRET");
+  // The proxy secret lives in the internal_secrets table (same place as the
+  // trading cron secret) so the operator can rotate it without redeploying.
+  const { data: proxySecretRow } = await supabase
+    .from("internal_secrets")
+    .select("value")
+    .eq("name", "proxy_secret")
+    .maybeSingle();
+  const proxySecret = proxySecretRow?.value ?? Deno.env.get("PROXY_SECRET") ?? "";
   if (proxyUrl) {
     try {
       const headers: Record<string, string> = { "X-MBX-APIKEY": BINANCE_API_KEY };
