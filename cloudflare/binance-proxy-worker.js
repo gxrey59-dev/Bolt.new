@@ -10,10 +10,21 @@
  *   3. npx wrangler deploy
  *   4. Set the output URL as BINANCE_PROXY_URL in your Supabase edge function secrets
  *
- * Security: optionally set PROXY_SECRET so only your edge function can call it.
+ * Security:
+ *   - Set PROXY_SECRET as a worker secret (npx wrangler secret put PROXY_SECRET).
+ *     Without it the worker fails closed and relays nothing — it must not act as
+ *     an open relay for signed Binance.US calls.
+ *   - Only /api/ and /sapi/ paths are forwarded.
  */
 
 const BINANCE_BASE = "https://api.binance.us";
+
+function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
 
 export default {
   async fetch(request, env) {
@@ -26,18 +37,31 @@ export default {
       return new Response(null, { status: 200, headers: corsHeaders });
     }
 
-    // Optional shared-secret guard
-    if (env.PROXY_SECRET) {
-      const provided = request.headers.get("X-Proxy-Secret");
-      if (provided !== env.PROXY_SECRET) {
-        return new Response(JSON.stringify({ error: "Unauthorized proxy request" }), {
-          status: 403,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
+    // Shared-secret guard, required. Fail closed: a worker deployed without a
+    // secret must never relay signed requests for whoever finds the URL.
+    if (!env.PROXY_SECRET) {
+      return new Response(JSON.stringify({ error: "Proxy not configured" }), {
+        status: 503,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    const provided = request.headers.get("X-Proxy-Secret") ?? "";
+    if (!timingSafeEqual(provided, env.PROXY_SECRET)) {
+      return new Response(JSON.stringify({ error: "Unauthorized proxy request" }), {
+        status: 403,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const url = new URL(request.url);
+    // Only forward signed-market-data and signed-account paths. Anything else
+    // (health checks, arbitrary origins) never reaches Binance through here.
+    if (!url.pathname.startsWith("/api/") && !url.pathname.startsWith("/sapi/")) {
+      return new Response(JSON.stringify({ error: "Path not allowed" }), {
+        status: 403,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
     const binanceUrl = `${BINANCE_BASE}${url.pathname}${url.search}`;
 
     // Forward only the essential headers — don't add browser UA or Content-Type

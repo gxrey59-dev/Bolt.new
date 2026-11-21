@@ -17,6 +17,17 @@ const BINANCE_BASE = "https://api.binance.us";
 const BINANCE_API_KEY = Deno.env.get("BINANCE_API_KEY_3")?.trim() ?? "";
 const BINANCE_SECRET_KEY = Deno.env.get("BINANCE_SECRET_KEY_3")?.trim() ?? "";
 
+// Binance.US spot fee per side (0.10%). Realized P&L is booked net of the round
+// trip: a trade that moved +0.10% used to count as a win while losing money
+// after fees, which poisoned the win-rate gate, the daily-loss kill switch and
+// the dashboards. Override if the account fee tier changes.
+const TRADING_FEE_RATE = Math.max(0, parseFloat(Deno.env.get("TRADING_FEE_RATE") ?? "") || 0.001);
+
+function netOfFees(grossPnl: number, entryPrice: number, exitPrice: number, qty: number): number {
+  const fee = (entryPrice * qty + exitPrice * qty) * TRADING_FEE_RATE;
+  return grossPnl - fee;
+}
+
 // Cache for exchange symbol filters (LOT_SIZE etc.)
 let symbolFiltersCache: Map<string, { minQty: number; stepSize: number; minNotional: number }> | null = null;
 let filtersCacheTime = 0;
@@ -1085,7 +1096,8 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
           exitPrice = result.averagePrice!;
         }
         const newRemainingQty = remainingQty - partialQty;
-        const partialPnl = isLong ? (exitPrice - entry) * partialQty : (entry - exitPrice) * partialQty;
+        const grossPartialPnl = isLong ? (exitPrice - entry) * partialQty : (entry - exitPrice) * partialQty;
+        const partialPnl = isLive ? netOfFees(grossPartialPnl, entry, exitPrice, partialQty) : grossPartialPnl;
         const { data: partialUpdated, error: partialUpdateError } = await persistExitUpdate(trade, {
           partial_exit_price: exitPrice,
           partial_exit_at: new Date().toISOString(),
@@ -1148,7 +1160,8 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
           quantity = result.executedQuantity!;
           exitPrice = result.averagePrice!;
         }
-        const pnl = isLong ? (exitPrice - entry) * quantity : (entry - exitPrice) * quantity;
+        const grossPnl = isLong ? (exitPrice - entry) * quantity : (entry - exitPrice) * quantity;
+        const pnl = isLive ? netOfFees(grossPnl, entry, exitPrice, quantity) : grossPnl;
         const partialPnl = Number(trade.partial_exit_pnl ?? 0);
         const totalPnl = pnl + partialPnl;
         const { data: closeUpdated, error: closeUpdateError } = await persistExitUpdate(trade, {
@@ -1859,7 +1872,8 @@ Deno.serve(async (req: Request) => {
           continue;
         }
         const partialPnl = Number(trade.partial_exit_pnl ?? 0);
-        const runnerPnl = (trade.side === "long" ? exitPrice! - Number(trade.entry_price) : Number(trade.entry_price) - exitPrice!) * executedQty;
+        const grossRunnerPnl = (trade.side === "long" ? exitPrice! - Number(trade.entry_price) : Number(trade.entry_price) - exitPrice!) * executedQty;
+        const runnerPnl = isLive ? netOfFees(grossRunnerPnl, Number(trade.entry_price), exitPrice!, executedQty) : grossRunnerPnl;
         const pnl = runnerPnl + partialPnl;
         const { data: closeUpdated, error: updateError } = await persistExitUpdate(trade, {
           status: "closed", exit_price: exitPrice, pnl,

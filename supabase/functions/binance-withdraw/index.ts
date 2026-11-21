@@ -646,7 +646,30 @@ Deno.serve(async (req: Request) => {
       }
 
       const usdtBefore = await getUsdtBalance();
-      const sellResults = await sellNonUsdtBalances();
+      // Protected coins: anything held by an open bot trade, plus the operator's
+      // keep list. A sweep that market-sold a position's coin would force-close
+      // that trade at market and break the stop-loss management loop.
+      const { data: openBotTrades, error: botTradesError } = await supabase
+        .from("paper_trades")
+        .select("symbol")
+        .eq("is_live", true)
+        .eq("status", "open");
+      if (botTradesError) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "Could not load open bot trades; collection skipped to protect open positions",
+        }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      const { data: cfgRow } = await supabase
+        .from("withdrawal_config")
+        .select("keep_coins")
+        .eq("id", 1)
+        .maybeSingle();
+      const protectedCoins = new Set([
+        ...(openBotTrades ?? []).map((t: { symbol: string }) => t.symbol.replace(/USDT$/, "")),
+        ...((cfgRow?.keep_coins as string[] | null) ?? []),
+      ]);
+      const sellResults = await sellNonUsdtBalances(protectedCoins);
       const totalErrors = sellResults.filter((s) => s.error).length;
 
       const usdtAfter = await getUsdtBalance();
@@ -822,7 +845,10 @@ Deno.serve(async (req: Request) => {
           status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-      const botCoins = new Set((openTrades ?? []).map((t: { symbol: string }) => t.symbol.replace(/USDT$/, "")));
+      const botCoins = new Set([
+        ...(openTrades ?? []).map((t: { symbol: string }) => t.symbol.replace(/USDT$/, "")),
+        ...((cfg.keep_coins as string[] | null) ?? []),
+      ]);
 
       const sold = (await sellNonUsdtBalances(botCoins)).filter((s) => s.orderId !== null);
       if (sold.length > 0) {
