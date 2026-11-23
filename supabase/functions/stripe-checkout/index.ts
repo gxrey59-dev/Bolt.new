@@ -1,6 +1,6 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import Stripe from 'npm:stripe@23.0.0';
-import { integrationIdentifier, validateCheckoutRedirect } from './policy.ts';
+import { integrationIdentifier, isChargeableUsdAmount, isDefinitiveStripeRejection, validateCheckoutRedirect } from './policy.ts';
 import { createClient } from 'npm:@supabase/supabase-js@2.49.1';
 
 const supabase = createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '');
@@ -88,6 +88,12 @@ Deno.serve(async (req) => {
     if (!Number.isFinite(mintPrice) || mintPrice <= 0) {
       return corsResponse({ error: 'NFT has no valid mint price' }, 500);
     }
+    // Stripe refuses USD charges under $0.50. Fail before reserving stock so an
+    // unpayable price cannot lock inventory.
+    if (!isChargeableUsdAmount(Math.round(mintPrice * 100))) {
+      console.error(`NFT ${nft.id} price ${mintPrice} USD is below the Stripe minimum`);
+      return corsResponse({ error: 'This item is not available for purchase yet.' }, 409);
+    }
 
     // Returning customers reuse their Stripe customer; guests pay without one.
     let customerId: string | undefined;
@@ -151,35 +157,42 @@ Deno.serve(async (req) => {
     // A network timeout can hide a successful Stripe creation. Hold stock until
     // Stripe confirms expiry; never infer failure from a transport error.
     checkoutCreated = true;
-    const session = await stripe.checkout.sessions.create({
-      integration_identifier: integrationIdentifier(),
-      ...(customerId ? { customer: customerId } : { customer_creation: 'always' }),
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: {
-              name: `${nft.name} — ${nft.member}`,
-              description: nft.persona?.slice(0, 300) ?? undefined,
-              metadata: { nft_id: nft.id },
+    let session: Stripe.Checkout.Session;
+    try {
+      session = await stripe.checkout.sessions.create({
+        integration_identifier: integrationIdentifier(),
+        ...(customerId ? { customer: customerId } : { customer_creation: 'always' }),
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: `${nft.name} — ${nft.member}`,
+                description: nft.persona?.slice(0, 300) ?? undefined,
+                metadata: { nft_id: nft.id },
+              },
+              unit_amount: Number(reservation.amount_total),
             },
-            unit_amount: Number(reservation.amount_total),
+            quantity: 1,
           },
-          quantity: 1,
+        ],
+        mode: 'payment',
+        // Abandoned checkouts expire after 31 minutes, freeing the reserved card.
+        expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
+        success_url,
+        cancel_url,
+        metadata: {
+          nft_id: nft.id,
+          buyer_user_id: userId ?? '',
+          reservation_id: reservation.id,
         },
-      ],
-      mode: 'payment',
-      // Abandoned checkouts expire after 31 minutes, freeing the reserved card.
-      expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
-      success_url,
-      cancel_url,
-      metadata: {
-        nft_id: nft.id,
-        buyer_user_id: userId ?? '',
-        reservation_id: reservation.id,
-      },
-    }, { idempotencyKey: `nft-checkout-${reservation.id}` });
-    checkoutCreated = true;
+      }, { idempotencyKey: `nft-checkout-${reservation.id}` });
+    } catch (stripeError) {
+      // Stripe answered and refused: no session exists, so the stock can be
+      // released. Anything ambiguous keeps the hold for reconciliation.
+      if (isDefinitiveStripeRejection(stripeError)) checkoutCreated = false;
+      throw stripeError;
+    }
 
     const { data: attached, error: saleInsertError } = await supabase.from('nft_sales').update({
       stripe_checkout_session_id: session.id,

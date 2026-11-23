@@ -31,3 +31,21 @@ export function integrationIdentifier() {
   const bytes = crypto.getRandomValues(new Uint8Array(8));
   return `financial-weapon-${Array.from(bytes, byte => String.fromCharCode(97 + byte % 26)).join('')}`;
 }
+
+/** Stripe rejects USD charges below $0.50; a lower price can never be paid. */
+export const STRIPE_MIN_USD_CENTS = 50;
+
+export function isChargeableUsdAmount(cents: unknown): boolean {
+  return typeof cents === 'number' && Number.isInteger(cents) && cents >= STRIPE_MIN_USD_CENTS;
+}
+
+/**
+ * True only when Stripe answered and refused the request (invalid parameters,
+ * amount too small, etc.), so no Checkout Session exists. Network, rate-limit,
+ * API and unknown errors stay ambiguous: the session may have been created.
+ */
+export function isDefinitiveStripeRejection(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const { type, statusCode } = error as { type?: unknown; statusCode?: unknown };
+  return type === 'StripeInvalidRequestError' && typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500 && statusCode !== 409 && statusCode !== 429;
+}

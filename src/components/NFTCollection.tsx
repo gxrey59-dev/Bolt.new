@@ -40,6 +40,11 @@ const FACTION_COLORS: Record<string, string> = {
   pink: '#ec4899', green: '#10b981', purple: '#a855f7', cyan: '#06b6d4', lime: '#84cc16',
 };
 
+// Stripe refuses USD charges under $0.50, so lower prices cannot be bought.
+const MIN_CHARGE_USD = 0.5;
+const isPurchasable = (n: { mint_price: number; minted_count: number; total_supply: number }) =>
+  n.minted_count < n.total_supply && Number(n.mint_price) >= MIN_CHARGE_USD;
+
 export default function NFTCollection() {
   const [nfts, setNfts] = useState<NFTCard[]>([]);
   const [loading, setLoading] = useState(true);
@@ -131,7 +136,7 @@ export default function NFTCollection() {
   }
 
   const cheapestAvailable = nfts
-    .filter(n => n.minted_count < n.total_supply)
+    .filter(isPurchasable)
     .sort((a, b) => Number(a.mint_price) - Number(b.mint_price))[0];
 
   async function handleQuickBuy() {
@@ -218,7 +223,7 @@ export default function NFTCollection() {
                 ? 'Opening checkout…'
                 : cheapestAvailable
                   ? `Buy card — $${Number(cheapestAvailable.mint_price).toFixed(2)}`
-                  : 'Sold Out'}
+                  : 'Unavailable'}
             </button>
             <button
               onClick={handleShare}
@@ -367,7 +372,7 @@ export default function NFTCollection() {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => void handleBuy(nft)}
-                    disabled={soldOut || buyingId !== null}
+                    disabled={soldOut || !isPurchasable(nft) || buyingId !== null}
                     className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                       soldOut
                         ? 'bg-zinc-800 text-zinc-500'
@@ -375,7 +380,7 @@ export default function NFTCollection() {
                     }`}
                   >
                     {buyingId === nft.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flame className="h-4 w-4" />}
-                    {soldOut ? 'Sold Out' : buyingId === nft.id ? 'Opening checkout…' : `Buy — $${Number(nft.mint_price).toFixed(2)}`}
+                    {soldOut ? 'Sold Out' : !isPurchasable(nft) ? 'Coming soon' : buyingId === nft.id ? 'Opening checkout…' : `Buy — $${Number(nft.mint_price).toFixed(2)}`}
                   </button>
                   <button
                     onClick={() => handleShareCard(nft)}
@@ -480,7 +485,7 @@ export default function NFTCollection() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => void handleBuy(selected)}
-                  disabled={selected.minted_count >= selected.total_supply || buyingId !== null}
+                  disabled={!isPurchasable(selected) || buyingId !== null}
                   className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-3 text-sm font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                     selected.minted_count >= selected.total_supply
                       ? 'bg-zinc-800 text-zinc-500'
@@ -488,7 +493,7 @@ export default function NFTCollection() {
                   }`}
                 >
                   {buyingId === selected.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flame className="h-4 w-4" />}
-                  {selected.minted_count >= selected.total_supply ? 'Sold Out' : buyingId === selected.id ? 'Opening checkout…' : `Buy — $${Number(selected.mint_price).toFixed(2)}`}
+                  {selected.minted_count >= selected.total_supply ? 'Sold Out' : !isPurchasable(selected) ? 'Coming soon' : buyingId === selected.id ? 'Opening checkout…' : `Buy — $${Number(selected.mint_price).toFixed(2)}`}
                 </button>
                 <a
                   href={selected.image_url}
