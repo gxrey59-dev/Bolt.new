@@ -40,3 +40,6 @@ export const MANAGERS = [
   { id: 'rae-manager', name: 'Raekwon', role: 'Risk Manager', trigger_type: 'loss_threshold' },
   { id: 'ghost-manager', name: 'Ghostface', role: 'Revenue Officer', trigger_type: 'sweep_trigger' },
 ];
+
+/** Public sales are paused unless a build explicitly sets VITE_SALES_ENABLED=true. */
+export const SALES_ENABLED = import.meta.env.VITE_SALES_ENABLED === 'true';

@@ -3,6 +3,7 @@ import { Zap, Check, Loader2, Crown, Lock, Unlock, TrendingUp, Radio, ShieldChec
 import { supabase, hasDatabaseAccess } from '@/lib/supabase';
 import { useVisibilityPolling } from '@/lib/useVisibilityPolling';
 import { signInWithEmail, signUpWithEmail } from '@/lib/operatorAuth';
+import { SALES_ENABLED } from '@/lib/constants';
 
 interface SubscriptionState {
   status: 'loading' | 'unavailable' | 'none' | 'active' | 'canceled';
@@ -249,6 +250,10 @@ export default function SignalsPro() {
                 {sub.cancel_at_period_end ? 'Access until' : 'Renews'} {sub.current_period_end ? new Date(sub.current_period_end * 1000).toLocaleDateString() : '—'}
               </p>
             </div>
+          ) : !SALES_ENABLED ? (
+            <span className="rounded-xl border border-zinc-700 bg-zinc-900 px-5 py-3 text-sm font-semibold text-zinc-400">
+              Subscriptions paused
+            </span>
           ) : (
             <button
               onClick={() => void handleSubscribe()}
@@ -262,7 +267,7 @@ export default function SignalsPro() {
         </div>
       </div>
 
-      {needsAuth && !isActive && (
+      {SALES_ENABLED && needsAuth && !isActive && (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
           <p className="flex items-center gap-2 text-sm text-amber-300">
             <Lock className="h-4 w-4" /> Create a free account to subscribe — access is tied to your login.

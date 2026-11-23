@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { SALES_ENABLED } from '@/lib/constants';
 import { Gem, Sparkles, Flame, Check, Loader2, Share2, Download, X, TrendingUp, Copy, ExternalLink, ShieldCheck, Zap } from 'lucide-react';
 import { hasDatabaseAccess, supabase } from '@/lib/supabase';
 import { FACTIONS } from '@/lib/constants';
@@ -43,7 +44,7 @@ const FACTION_COLORS: Record<string, string> = {
 // Stripe refuses USD charges under $0.50, so lower prices cannot be bought.
 const MIN_CHARGE_USD = 0.5;
 const isPurchasable = (n: { mint_price: number; minted_count: number; total_supply: number }) =>
-  n.minted_count < n.total_supply && Number(n.mint_price) >= MIN_CHARGE_USD;
+  SALES_ENABLED && n.minted_count < n.total_supply && Number(n.mint_price) >= MIN_CHARGE_USD;
 
 export default function NFTCollection() {
   const [nfts, setNfts] = useState<NFTCard[]>([]);
@@ -223,7 +224,7 @@ export default function NFTCollection() {
                 ? 'Opening checkout…'
                 : cheapestAvailable
                   ? `Buy card — $${Number(cheapestAvailable.mint_price).toFixed(2)}`
-                  : 'Unavailable'}
+                  : SALES_ENABLED ? 'Unavailable' : 'Sales paused'}
             </button>
             <button
               onClick={handleShare}
@@ -380,7 +381,7 @@ export default function NFTCollection() {
                     }`}
                   >
                     {buyingId === nft.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flame className="h-4 w-4" />}
-                    {soldOut ? 'Sold Out' : !isPurchasable(nft) ? 'Coming soon' : buyingId === nft.id ? 'Opening checkout…' : `Buy — $${Number(nft.mint_price).toFixed(2)}`}
+                    {soldOut ? 'Sold Out' : !isPurchasable(nft) ? (SALES_ENABLED ? 'Coming soon' : 'Sales paused') : buyingId === nft.id ? 'Opening checkout…' : `Buy — $${Number(nft.mint_price).toFixed(2)}`}
                   </button>
                   <button
                     onClick={() => handleShareCard(nft)}
@@ -493,7 +494,7 @@ export default function NFTCollection() {
                   }`}
                 >
                   {buyingId === selected.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flame className="h-4 w-4" />}
-                  {selected.minted_count >= selected.total_supply ? 'Sold Out' : !isPurchasable(selected) ? 'Coming soon' : buyingId === selected.id ? 'Opening checkout…' : `Buy — $${Number(selected.mint_price).toFixed(2)}`}
+                  {selected.minted_count >= selected.total_supply ? 'Sold Out' : !isPurchasable(selected) ? (SALES_ENABLED ? 'Coming soon' : 'Sales paused') : buyingId === selected.id ? 'Opening checkout…' : `Buy — $${Number(selected.mint_price).toFixed(2)}`}
                 </button>
                 <a
                   href={selected.image_url}

@@ -37,6 +37,11 @@ Deno.serve(async (req) => {
       return corsResponse({ error: 'Checkout return URL is not configured for this app.' }, 400);
     }
     if (tier !== 'pro') return corsResponse({ error: 'Unknown tier' }, 400);
+    // Sales are off unless explicitly re-enabled. Existing customers can still
+    // reach the billing portal to manage or cancel.
+    if (action !== 'portal' && Deno.env.get('SALES_ENABLED') !== 'true') {
+      return corsResponse({ error: 'Sales are paused.' }, 503);
+    }
     if (typeof success_url !== 'string' || typeof cancel_url !== 'string') {
       return corsResponse({ error: 'Missing success_url or cancel_url' }, 400);
     }

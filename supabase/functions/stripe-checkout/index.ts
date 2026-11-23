@@ -41,6 +41,11 @@ Deno.serve(async (req) => {
       return corsResponse({ error: 'Method not allowed' }, 405);
     }
 
+    // Sales are off unless explicitly re-enabled. Nothing is reserved or charged.
+    if (Deno.env.get('SALES_ENABLED') !== 'true') {
+      return corsResponse({ error: 'Sales are paused.' }, 503);
+    }
+
     const { nft_id, success_url: requestedSuccessUrl, cancel_url: requestedCancelUrl } = await req.json();
     let success_url: string;
     let cancel_url: string;
