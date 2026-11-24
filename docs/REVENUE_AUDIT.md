@@ -108,3 +108,19 @@ I checked the live state, the code and the scheduled jobs.
 - No strategy clears readiness. Every strategy beat buy-and-hold by a wide margin, though, because the regime filter kept them in cash during the bear market.
 
 **Next.** Do not tune these parameters against this data: that only fits noise. If you continue, forward-test A in paper mode as a pre-registered strategy and judge it only on new trades. Expect little: with $27.80 of capital and $6 orders, even a strong edge earns cents to a few dollars a month.
+
+## BTC timing, limit entries and telemetry retention — 2026-11-24
+
+**BTC trend-timing.** Both variants were fixed before testing. The rule holds BTC while its 4h close is above the SMA, and is in cash otherwise.
+
+| Variant | Train (BTC hold −48.1%) | Test (BTC hold −0.7%) |
+|---|---|---|
+| Fast, SMA50 | −38.7% | −9.8% |
+| Slow, SMA200 | **−19.7%** | **+8.4%** |
+| Slow, SMA200, limit entries | −16.1% | +11.0% |
+
+Slow timing is the only rule that beat holding in both periods. It is a drawdown filter, not an income source: 15 test trades, and a few big winners carry the result.
+
+**Limit entries at a best-case 0% maker fee.** Every strategy improves by about 0.1 to 0.3 of profit factor: A goes from 0.83 to 1.04, B from 1.15 to 1.23, and C from 0.78 to 0.91, all on test. Those figures count missed and adverse fills. None crosses 1.3, so I have not built a live limit-order lifecycle yet. Adding unfilled-order, partial-fill and cancel handling to the live money path is not worth it until a strategy passes.
+
+**Telemetry retention.** The migration is `20261124050000_telemetry_retention_and_scan_cadence.sql`, tested in `tests/telemetry-retention.test.mjs`. It adds an hourly `prune_telemetry()` that removes signals older than 30 days and noisy audit types older than 30 days, in batches of 50k. Money history is never removed. It also moves the scan from 30s to 5 min. The database is at 908 MB, and 552k signal rows are older than 30 days.
