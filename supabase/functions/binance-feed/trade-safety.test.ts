@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { entryClientOrderId, isDefinitiveOrderRejection, runClaimedEntry, recoverEntryTracking, exitConfirmationError, liveExitBlockReason, parseOrderReceipt, runClaimedExit, valueOpenPosition } from './trade-safety.ts';
+import { entryClientOrderId, isDefinitiveOrderRejection, runClaimedEntry, recoverEntryTracking, exitConfirmationError, isAwaitingReconciliation, liveExitBlockReason, parseOrderReceipt, runClaimedExit, valueOpenPosition } from './trade-safety.ts';
 
 const receipt = { orderId: 123, status: 'FILLED', executedQty: '2', cummulativeQuoteQty: '220' };
 
@@ -203,4 +203,15 @@ test('filled entry with an unobserved database row always requires reconciliatio
     assert.match(result.error!, new RegExp(failure));
   }
   assert.deepEqual(recoverEntryTracking('confirmed-row', 'response lost'), { tradeId: 'confirmed-row', error: null });
+});
+
+test('only live trades flagged for reconciliation are skipped by the scan loop', () => {
+  const flagged = 'Reconciliation required: close order 1 filled 137.1 of 137.2';
+  assert.equal(isAwaitingReconciliation({ is_live: true, execution_error: flagged }), true);
+  for (const trade of [
+    { is_live: false, execution_error: flagged },
+    { is_live: true, execution_error: null },
+    { is_live: true, execution_error: 'Live close blocked: entry order ID is missing' },
+    { is_live: 'true', execution_error: flagged },
+  ]) assert.equal(isAwaitingReconciliation(trade), false, JSON.stringify(trade));
 });

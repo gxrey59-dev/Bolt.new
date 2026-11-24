@@ -28,3 +28,23 @@ I checked the repository against the live `bolt-native-database` project using r
 3. Either build the premium signal producer or pause Signals Pro sales.
 4. Reprice the collection in real USD, at $5 or more so Stripe fees don't eat the margin, and clear up licensing or rename the items.
 5. Once there is real content and traffic, add an annual plan, `allow_promotion_codes`, and Stripe Tax.
+
+## Trading engine audit — 2026-11-24 (read-only)
+
+I checked the live state, the code and the scheduled jobs.
+
+**State.** The engine is in paper mode with the kill switch off. Live capital is $27.80. From Sep 15 to Nov 19 it made 205 live trades: net −$0.54 on about $1,070 traded, 96 wins and 99 losses. Paper trading since Nov 12: 18 trades, +$1.32. None of the 224 trades has verified accounting.
+
+**Safe.**
+- Live mode is spot-only. A short signal only exits a long you already hold.
+- Entries are claimed in the database before any order is sent, and ambiguous exchange errors keep the claim instead of retrying.
+- Limits hold: 1 live position per pair, a 4-hour cooldown after each exit, the BTC trend filter, at most 3 open positions per faction, and a 10% daily-loss kill switch.
+- Every control route requires an operator sign-in, and `/scan` requires the cron secret.
+- Withdrawals are disarmed. Binance answered the last attempt with 401, so the API key has no withdrawal permission. No funds have ever been withdrawn; the 160,000 USDC row is a failed simulation record.
+
+**Issues.**
+1. **The SEIUSDT position is stuck "open".** Its close filled 137.1 of 137.2, leaving 0.1 SEI of dust. Every 30-second scan logged a refused close: 8,631 `audit_log` rows in 72 hours. No order was sent. Fixed in code by skipping trades flagged for reconciliation in the scan loop. The trade still needs manual reconciliation, and until then it blocks SEI entries.
+2. **Positions are larger than configured.** `max_position_pct` is 10%, but the $6.05 exchange floor makes each live trade about 22% of a $27.80 balance.
+3. **The `/transfer` endpoint accepts any destination address** from a signed-in operator. Turn on Binance.US address whitelisting, and keep the API key without withdrawal permission.
+4. **Storage is growing.** `signals` is 712 MB with about 940k rows and `audit_log` is 70 MB, both growing every 30 seconds. Check your Supabase plan's disk limit, and add a retention job.
+5. **The strategy has no edge yet.** It was break-even after fees over 205 live trades. Stay in paper mode until it shows a positive result over a meaningful sample.

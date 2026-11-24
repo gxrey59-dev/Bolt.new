@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
-import { entryClientOrderId, isDefinitiveOrderRejection, runClaimedEntry, recoverEntryTracking, liveExitBlockReason, parseOrderReceipt, RECONCILIATION_REQUIRED, runClaimedExit, valueOpenPosition, type ExchangeOrderResult } from "./trade-safety.ts";
+import { entryClientOrderId, isDefinitiveOrderRejection, runClaimedEntry, recoverEntryTracking, isAwaitingReconciliation, liveExitBlockReason, parseOrderReceipt, RECONCILIATION_REQUIRED, runClaimedExit, valueOpenPosition, type ExchangeOrderResult } from "./trade-safety.ts";
 import { isBtcRegimeBullish, isMaxHoldExceeded, MAX_HOLD_HOURS } from "./regime-filter.ts";
 
 const corsHeaders = {
@@ -975,6 +975,8 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
   let liveNetPnl = 0;
 
   for (const trade of openTrades) {
+    // Already known to need manual reconciliation; the exit would be refused.
+    if (isAwaitingReconciliation(trade)) continue;
     const currentPrice = currentPrices.get(trade.symbol);
     if (!currentPrice) continue;
 

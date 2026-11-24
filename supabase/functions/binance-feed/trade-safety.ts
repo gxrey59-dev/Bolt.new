@@ -174,3 +174,13 @@ export function valueOpenPosition<T extends PositionRecord>(trade: T, quote: num
     remaining_quantity: remaining,
   };
 }
+
+/**
+ * A live trade flagged for reconciliation cannot be exited automatically:
+ * liveExitBlockReason refuses it every time. Skip it in the scan loop so the
+ * engine does not write a fresh failure record on every tick. Operator close
+ * paths are unaffected.
+ */
+export function isAwaitingReconciliation(trade: { is_live?: unknown; execution_error?: unknown }): boolean {
+  return trade.is_live === true && typeof trade.execution_error === 'string' && trade.execution_error.startsWith(RECONCILIATION_REQUIRED);
+}
