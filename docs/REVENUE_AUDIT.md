@@ -48,3 +48,17 @@ I checked the live state, the code and the scheduled jobs.
 3. **The `/transfer` endpoint accepts any destination address** from a signed-in operator. Turn on Binance.US address whitelisting, and keep the API key without withdrawal permission.
 4. **Storage is growing.** `signals` is 712 MB with about 940k rows and `audit_log` is 70 MB, both growing every 30 seconds. Check your Supabase plan's disk limit, and add a retention job.
 5. **The strategy has no edge yet.** It was break-even after fees over 205 live trades. Stay in paper mode until it shows a positive result over a meaningful sample.
+
+## Paper mode audit — 2026-11-24
+
+**Paper results were too optimistic.**
+- Paper P&L was booked before fees; only live trades paid them.
+- 14 of the 18 paper trades were shorts, which live spot trading can never take.
+- Paper's +$1.32 therefore said nothing about live results. The live record is the honest one: 201 long trades at −0.08% per dollar traded.
+
+**Fixed in code (`paper-parity.ts`, not yet deployed):**
+- Paper trades now pay the same fees as live, plus an estimated 0.05% slippage per side (`PAPER_SLIPPAGE_RATE`).
+- Paper is spot-only like live: short signals only exit longs.
+- `GET /binance-feed/config` returns `liveReadiness`, which judges paper trades closed after `PAPER_PARITY_SINCE` (2026-11-24). They must clear four bars: at least 200 trades, profit factor ≥ 1.3, net return ≥ 0.15% per trade, and max drawdown ≤ 15% of capital. Older paper trades are excluded because they followed the old rules.
+
+**What this means.** No strategy wins forever: markets change, and an edge decays. The readiness gate makes the go-live decision rest on evidence, not hope. Re-check it after a regime change, and drop back to paper if live results fall below the bars.

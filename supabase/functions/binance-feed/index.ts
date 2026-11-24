@@ -1,6 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { entryClientOrderId, isDefinitiveOrderRejection, runClaimedEntry, recoverEntryTracking, isAwaitingReconciliation, liveExitBlockReason, parseOrderReceipt, RECONCILIATION_REQUIRED, runClaimedExit, valueOpenPosition, type ExchangeOrderResult } from "./trade-safety.ts";
 import { isBtcRegimeBullish, isMaxHoldExceeded, MAX_HOLD_HOURS } from "./regime-filter.ts";
+import { bookedPnl, liveReadiness } from "./paper-parity.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -23,9 +24,14 @@ const BINANCE_SECRET_KEY = Deno.env.get("BINANCE_SECRET_KEY_3")?.trim() ?? "";
 // the dashboards. Override if the account fee tier changes.
 const TRADING_FEE_RATE = Math.max(0, parseFloat(Deno.env.get("TRADING_FEE_RATE") ?? "") || 0.001);
 
-function netOfFees(grossPnl: number, entryPrice: number, exitPrice: number, qty: number): number {
-  const fee = (entryPrice * qty + exitPrice * qty) * TRADING_FEE_RATE;
-  return grossPnl - fee;
+// Paper fills also pay estimated slippage so paper results predict live ones.
+const PAPER_SLIPPAGE_RATE = Math.max(0, parseFloat(Deno.env.get("PAPER_SLIPPAGE_RATE") ?? "") || 0.0005);
+// Paper trades before this time were booked gross and included shorts that
+// live spot trading cannot take; readiness only counts trades after it.
+const PAPER_PARITY_SINCE = Deno.env.get("PAPER_PARITY_SINCE") ?? "2026-11-24T00:00:00Z";
+
+function netOfFees(grossPnl: number, entryPrice: number, exitPrice: number, qty: number, isLive = true): number {
+  return bookedPnl(grossPnl, entryPrice, exitPrice, qty, { isLive, feeRate: TRADING_FEE_RATE, paperSlippageRate: PAPER_SLIPPAGE_RATE });
 }
 
 // Cache for exchange symbol filters (LOT_SIZE etc.)
@@ -699,6 +705,20 @@ async function getStrategyWinRates(): Promise<Map<string, { winRate: number; tot
   return result;
 }
 
+// ─── Live Readiness ────────────────────────────────────────────────
+
+async function getLiveReadiness(config: FullConfig) {
+  const { data, error } = await supabase
+    .from("paper_trades")
+    .select("pnl, position_value, closed_at")
+    .eq("status", "closed")
+    .eq("is_live", false)
+    .gte("closed_at", PAPER_PARITY_SINCE);
+  if (error) throw new Error(`Paper history unavailable: ${error.message}`);
+  const trades = (data ?? []).map((t) => ({ pnl: Number(t.pnl), positionValue: Number(t.position_value), closedAt: String(t.closed_at) }));
+  return { since: PAPER_PARITY_SINCE, ...liveReadiness(trades, config.liveCapital > 0 ? config.liveCapital : config.startingCapital) };
+}
+
 // ─── Kill Switch ───────────────────────────────────────────────────
 
 async function checkKillSwitch(config: FullConfig): Promise<{ tripped: boolean; reason: string | null }> {
@@ -1099,7 +1119,7 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
         }
         const newRemainingQty = remainingQty - partialQty;
         const grossPartialPnl = isLong ? (exitPrice - entry) * partialQty : (entry - exitPrice) * partialQty;
-        const partialPnl = isLive ? netOfFees(grossPartialPnl, entry, exitPrice, partialQty) : grossPartialPnl;
+        const partialPnl = netOfFees(grossPartialPnl, entry, exitPrice, partialQty, isLive);
         const { data: partialUpdated, error: partialUpdateError } = await persistExitUpdate(trade, {
           partial_exit_price: exitPrice,
           partial_exit_at: new Date().toISOString(),
@@ -1163,7 +1183,7 @@ async function checkOpenPositions(currentPrices: Map<string, number>, config: Fu
           exitPrice = result.averagePrice!;
         }
         const grossPnl = isLong ? (exitPrice - entry) * quantity : (entry - exitPrice) * quantity;
-        const pnl = isLive ? netOfFees(grossPnl, entry, exitPrice, quantity) : grossPnl;
+        const pnl = netOfFees(grossPnl, entry, exitPrice, quantity, isLive);
         const partialPnl = Number(trade.partial_exit_pnl ?? 0);
         const totalPnl = pnl + partialPnl;
         const { data: closeUpdated, error: closeUpdateError } = await persistExitUpdate(trade, {
@@ -1432,6 +1452,7 @@ Deno.serve(async (req: Request) => {
         rsiOversold: config.rsiOversold,
         rsiOverbought: config.rsiOverbought,
         strategyWinRates: Object.fromEntries(winRates),
+        liveReadiness: await getLiveReadiness(config),
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -1605,8 +1626,9 @@ Deno.serve(async (req: Request) => {
         });
 
         if (signal) {
-          // Live mode is spot-only: a bearish signal sells any held position and opens nothing
-          if (!config.paperMode && signal.side === "short") {
+          // Spot-only in both modes: a bearish signal sells any held position
+          // and opens nothing. Paper must not count trades live cannot take.
+          if (signal.side === "short") {
             bearishSymbols.add(symbol);
             signals.push({
               symbol, faction: await pickFaction(symbol), strategy: signal.strategy, side: signal.side,
@@ -1875,7 +1897,7 @@ Deno.serve(async (req: Request) => {
         }
         const partialPnl = Number(trade.partial_exit_pnl ?? 0);
         const grossRunnerPnl = (trade.side === "long" ? exitPrice! - Number(trade.entry_price) : Number(trade.entry_price) - exitPrice!) * executedQty;
-        const runnerPnl = isLive ? netOfFees(grossRunnerPnl, Number(trade.entry_price), exitPrice!, executedQty) : grossRunnerPnl;
+        const runnerPnl = netOfFees(grossRunnerPnl, Number(trade.entry_price), exitPrice!, executedQty, isLive);
         const pnl = runnerPnl + partialPnl;
         const { data: closeUpdated, error: updateError } = await persistExitUpdate(trade, {
           status: "closed", exit_price: exitPrice, pnl,
