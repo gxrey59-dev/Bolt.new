@@ -86,3 +86,25 @@ I checked the live state, the code and the scheduled jobs.
 **Verdict.** It fails every readiness bar. Because it loses even with zero costs, the entry signal has a negative edge: it buys after confluence has already formed, then gets stopped out on mean reversion. Changing parameters or costs will not fix it. It needs a different entry thesis, tested the same way before any live capital.
 
 **Caveat.** The backtest makes fewer trades than live did (29 against 205 in the live window). Live re-evaluates every 30s against the ticker, and its pair list and rules changed over time. Both are clearly negative.
+
+## New entry signals — backtest, 2026-11-24: none passes
+
+**Method.** I committed to the method before seeing any results.
+- Data: 4h Binance.US candles from 2025-07 to 2026-11, six pairs. That is a deep bear market: buy-and-hold lost 64.5% per coin in training and 17.7% in testing.
+- Three theses with fixed parameters, all gated by the BTC 4h SMA50 regime filter.
+- Costs: 0.15% per side. Orders: $6.05. Fills at the next open.
+- Split: choose the winner on the first two-thirds (train), then judge it only on the last third (test).
+
+| Strategy | Rule | Train | Test |
+|---|---|---|---|
+| A. Dip in uptrend | close > SMA100, RSI14 < 35. Exit at RSI > 55, after 48h, or on a 2×ATR stop | 46 trades, PF 2.66, +2.21%/trade | 34 trades, PF 0.83, −0.27%/trade |
+| B. Breakout | close > 30-bar high. 3×ATR chandelier stop, 10-day max hold | 117 trades, PF 0.50 | 62 trades, PF 1.15, +0.35%/trade |
+| C. Trend | close > rising SMA50. Exit below SMA50, 3×ATR stop | 212 trades, PF 0.35 | 96 trades, PF 0.78 |
+
+**Verdict.**
+- **A** won training and then failed on unseen data. It is regime-dependent, and its training edge did not survive.
+- **B** lost in training. Its positive test result is not enough to select it: picking it after seeing the test would be hindsight, and PF 1.15 on 62 trades is below the bar anyway.
+- **C** lost in both periods.
+- No strategy clears readiness. Every strategy beat buy-and-hold by a wide margin, though, because the regime filter kept them in cash during the bear market.
+
+**Next.** Do not tune these parameters against this data: that only fits noise. If you continue, forward-test A in paper mode as a pre-registered strategy and judge it only on new trades. Expect little: with $27.80 of capital and $6 orders, even a strong edge earns cents to a few dollars a month.
