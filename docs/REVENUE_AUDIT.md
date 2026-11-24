@@ -62,3 +62,27 @@ I checked the live state, the code and the scheduled jobs.
 - `GET /binance-feed/config` returns `liveReadiness`, which judges paper trades closed after `PAPER_PARITY_SINCE` (2026-11-24). They must clear four bars: at least 200 trades, profit factor ≥ 1.3, net return ≥ 0.15% per trade, and max drawdown ≤ 15% of capital. Older paper trades are excluded because they followed the old rules.
 
 **What this means.** No strategy wins forever: markets change, and an edge decays. The readiness gate makes the go-live decision rest on evidence, not hope. Re-check it after a regime change, and drop back to paper if live results fall below the bars.
+
+## Live-readiness verdict — 2026-11-24: NOT READY
+
+**Method.** I backtested 3,000 hours of real Binance.US hourly candles (2026-07-21 to 2026-11-23) across the six enabled pairs.
+- **Signal logic:** a PL/pgSQL port of the live engine's `calculateAllIndicators` + `analyzeConfluence` + `evaluateStrategies`. It matches the TypeScript bar for bar: identical MD5 fingerprints over 301 synthetic bars, 11 signals included.
+- **Rules:** the live rules: longs only, BTC regime filter, 2% stop and 4% target, breakeven at +1.5%, 2% trailing stop from +3%, 24h max hold, bearish exit, 4h cooldown, $6.05 orders.
+- **Fills:** at the next bar's open, so no look-ahead.
+
+**Results.**
+
+| Scenario | Trades | Net | Win % | Profit factor | Return per trade |
+|---|---|---|---|---|---|
+| Pessimistic (stop first, fee + slippage) | 62 | −$3.43 | 24.2% | 0.50 | −0.91% |
+| Target first, fees only | 62 | −$3.05 | 24.2% | 0.53 | −0.81% |
+| Target first, **no fees** | 62 | −$2.31 | 25.8% | 0.61 | −0.62% |
+| No BTC filter | 93 | −$4.09 | 24.7% | 0.57 | −0.73% |
+
+- Losses appear in every third of the period: −$1.77, −$1.01 and −$0.65.
+- 42 of 62 exits were stops (−$6.37), against 11 targets (+$3.15).
+- Only IMX was net positive (+$0.49).
+
+**Verdict.** It fails every readiness bar. Because it loses even with zero costs, the entry signal has a negative edge: it buys after confluence has already formed, then gets stopped out on mean reversion. Changing parameters or costs will not fix it. It needs a different entry thesis, tested the same way before any live capital.
+
+**Caveat.** The backtest makes fewer trades than live did (29 against 205 in the live window). Live re-evaluates every 30s against the ticker, and its pair list and rules changed over time. Both are clearly negative.
